@@ -57,7 +57,7 @@ app.get('/api/matches', async (_request, response, next) => {
   try {
     const { rows } = await pool.query(`
       SELECT
-        m.id AS "matchId",
+        m.id::int AS "matchId",
         m.status,
         m.match_time AS "matchTime",
         m.kickoff_at AS "kickoffAt",
@@ -146,7 +146,7 @@ app.get('/api/standings/:leagueId', async (request, response, next) => {
 app.get('/api/leagues', async (_request, response, next) => {
   try {
     const { rows } = await pool.query(`
-      SELECT id, name, country, logo_url AS "logoUrl"
+      SELECT id::int AS id, name, country, logo_url AS "logoUrl"
       FROM leagues
       WHERE sportmonks_id IS NOT NULL
       ORDER BY name ASC
