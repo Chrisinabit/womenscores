@@ -4,6 +4,7 @@ import pool from '../db.js'
 
 try {
   const migrationFiles = [
+    '../migrations/000_create_base_schema.sql',
     '../migrations/001_add_api_football_ids.sql',
     '../migrations/002_sync_id_sequences.sql',
     '../migrations/003_add_sportmonks_ids.sql',
