@@ -15,11 +15,17 @@ const liveCacheTtlMs = 20_000
 const requestIntervalMs = Number(process.env.SPORTMONKS_MIN_INTERVAL_MS || 1000)
 const upcomingFixtureDays = Number(process.env.UPCOMING_FIXTURE_DAYS || 14)
 const pastFixtureDays = Number(process.env.PAST_FIXTURE_DAYS || 7)
-const activeStates = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'INT'])
+// Sportmonks uses numeric periods ("1st", "2nd") for in-play fixtures; the
+// short codes are kept as well in case the API ever switches between the two.
+const activeStates = new Set([
+  'LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'INT',
+  '1ST', '2ND', 'ET1ST', 'ET2ND', 'PEN', 'BREAK',
+])
 const finishedStates = new Set(['FT', 'AET', 'FT_PEN', 'AWD', 'WO'])
 const stateMap = new Map([
   ['NS', 'scheduled'],
   ['TBA', 'scheduled'],
+  ['POST', 'postponed'],
   ['PST', 'postponed'],
   ['CANC', 'cancelled'],
   ['ABD', 'abandoned'],
@@ -407,8 +413,11 @@ function formatMatchTime(date, dataType) {
   throw new Error(`Unsupported matches.match_time type: ${dataType}`)
 }
 
+// Returns null when the fixture carries no state, so callers can leave the
+// stored status untouched instead of overwriting it with a guess.
 function normalizedStatus(shortName) {
-  const state = String(shortName || '').toUpperCase()
+  const state = String(shortName || '').trim().toUpperCase()
+  if (!state) return null
   if (activeStates.has(state)) return 'live'
   if (finishedStates.has(state)) return 'finished'
   return stateMap.get(state) || 'scheduled'
@@ -500,6 +509,40 @@ async function persistFixtures(fixtures, trackedLeagues) {
     const matchTime = formatMatchTime(kickoffAt, matchTimeDataType)
     const scores = getCurrentScores(fixture)
     const minute = fixtureMinute(fixture)
+
+    if (status === null) {
+      // No state in the payload: keep whatever status is already stored.
+      await pool.query(
+        `
+          INSERT INTO matches (
+            sportmonks_id, league_id, home_team_id, away_team_id,
+            minute, home_score, away_score, match_time, kickoff_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          ON CONFLICT (sportmonks_id) DO UPDATE
+          SET league_id = EXCLUDED.league_id,
+              home_team_id = EXCLUDED.home_team_id,
+              away_team_id = EXCLUDED.away_team_id,
+              home_score = EXCLUDED.home_score,
+              away_score = EXCLUDED.away_score,
+              match_time = EXCLUDED.match_time,
+              kickoff_at = EXCLUDED.kickoff_at
+        `,
+        [
+          fixture.id,
+          league.id,
+          homeTeamId,
+          awayTeamId,
+          minute,
+          scores.home ?? null,
+          scores.away ?? null,
+          matchTime,
+          kickoffAt,
+        ],
+      )
+      saved += 1
+      continue
+    }
 
     await pool.query(
       `
@@ -670,8 +713,25 @@ export async function syncLiveFixtures() {
       return { fixtures: 0 }
     }
 
-    const fixtures = await getLiveFixtures([...trackedLeagues.keys()])
-    const fixtureCount = await persistFixtures(fixtures, trackedLeagues)
+    const leagueIds = [...trackedLeagues.keys()]
+    const fixtures = await getLiveFixtures(leagueIds)
+
+    // In-play fixtures only cover matches currently being played, so a match
+    // that finished since the last full sync would keep its last live state
+    // forever. Re-check today's fixtures every run so results settle.
+    let fixturesByDate = []
+    try {
+      fixturesByDate = await getFixturesForDate(dateForOffset(0), leagueIds)
+    } catch (error) {
+      console.error('Could not refresh today\'s fixtures:', error)
+    }
+
+    const byId = new Map(fixtures.map((fixture) => [Number(fixture.id), fixture]))
+    for (const fixture of fixturesByDate) {
+      byId.set(Number(fixture.id), fixture)
+    }
+
+    const fixtureCount = await persistFixtures([...byId.values()], trackedLeagues)
     return { fixtures: fixtureCount }
   })
 }

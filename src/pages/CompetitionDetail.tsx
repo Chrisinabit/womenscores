@@ -101,7 +101,10 @@ export default function CompetitionDetail() {
   }
 
   const upcoming = matches
-    .filter((match) => match.status.toLowerCase() === 'scheduled')
+    .filter((match) => {
+      const status = match.status.toLowerCase()
+      return status === 'scheduled' || status === 'postponed'
+    })
     .sort((left, right) => kickoffTime(left) - kickoffTime(right))
   const results = matches
     .filter((match) => match.status.toLowerCase() === 'finished')
@@ -193,7 +196,9 @@ export default function CompetitionDetail() {
                     <strong className="col-start-2 row-start-1 text-right text-xs tabular-nums text-white sm:col-start-3 sm:row-start-1">
                       {match.status.toLowerCase() === 'live' || match.status.toLowerCase() === 'finished'
                         ? `${match.homeScore ?? 0} – ${match.awayScore ?? 0}`
-                        : formatFixtureTime(match.kickoffAt || match.matchTime)}
+                        : match.status.toLowerCase() === 'postponed'
+                          ? '—'
+                          : formatFixtureTime(match.kickoffAt || match.matchTime)}
                     </strong>
                     <span className="hidden text-right text-[9px] text-gray-500 sm:col-start-4 sm:row-start-1 sm:block">
                       {match.status.toLowerCase() === 'live'

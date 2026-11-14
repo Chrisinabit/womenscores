@@ -11,6 +11,7 @@ export type Match = {
   awayScore?: number
   isLive: boolean
   isFinished?: boolean
+  isPostponed?: boolean
   date?: string
   homeCrestUrl?: string | null
   awayCrestUrl?: string | null
@@ -63,7 +64,9 @@ export default function LiveMatchCard({ match }: { match: Match }) {
           ) : (
             <span className="text-xs font-medium text-gray-500">vs</span>
           )}
-          <span className="text-[9px] uppercase tracking-[.15em] text-gray-500">{match.isLive ? 'Full time pending' : 'Kick-off'}</span>
+          <span className="text-[9px] uppercase tracking-[.15em] text-gray-500">
+            {match.isLive ? 'Full time pending' : match.isPostponed ? 'Postponed' : 'Kick-off'}
+          </span>
         </div>
         <div className="flex min-w-0 items-center justify-end gap-2.5 text-right text-xs font-medium text-white sm:gap-3">
           <span className="truncate">{match.away}</span>
