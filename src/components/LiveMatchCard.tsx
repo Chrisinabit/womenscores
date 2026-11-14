@@ -10,6 +10,7 @@ export type Match = {
   homeScore?: number
   awayScore?: number
   isLive: boolean
+  isFinished?: boolean
   date?: string
   homeCrestUrl?: string | null
   awayCrestUrl?: string | null

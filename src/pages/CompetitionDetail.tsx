@@ -94,7 +94,20 @@ export default function CompetitionDetail() {
 
   if (!competition) return <Navigate to="/competitions" replace />
 
-  const schedule = matches.filter((match) => match.status.toLowerCase() !== 'live')
+  const kickoffTime = (match: ApiMatch) => {
+    const value = match.kickoffAt || match.matchTime
+    const time = value ? new Date(value).getTime() : Number.NaN
+    return Number.isNaN(time) ? 0 : time
+  }
+
+  const upcoming = matches
+    .filter((match) => match.status.toLowerCase() === 'scheduled')
+    .sort((left, right) => kickoffTime(left) - kickoffTime(right))
+  const results = matches
+    .filter((match) => match.status.toLowerCase() === 'finished')
+    .sort((left, right) => kickoffTime(right) - kickoffTime(left))
+
+  const schedule = activeTab === 'results' ? results : upcoming
   const scheduleTitle = activeTab === 'fixtures' ? 'Upcoming fixtures' : 'Recent results'
 
   return (
@@ -178,7 +191,7 @@ export default function CompetitionDetail() {
                       <span className="min-w-0 truncate">{match.awayTeam.name}</span>
                     </div>
                     <strong className="col-start-2 row-start-1 text-right text-xs tabular-nums text-white sm:col-start-3 sm:row-start-1">
-                      {match.status.toLowerCase() === 'live'
+                      {match.status.toLowerCase() === 'live' || match.status.toLowerCase() === 'finished'
                         ? `${match.homeScore ?? 0} – ${match.awayScore ?? 0}`
                         : formatFixtureTime(match.kickoffAt || match.matchTime)}
                     </strong>
@@ -197,7 +210,7 @@ export default function CompetitionDetail() {
               <CalendarDays size={22} className="mx-auto text-amber-300" />
               <h2 className="mt-3 text-sm font-medium text-white">No recent results available</h2>
               <p className="mx-auto mt-2 max-w-md text-xs leading-5 text-gray-400">
-                The matches endpoint currently provides live and scheduled fixtures only.
+                The backend has no finished matches for this league in the recent window.
               </p>
             </div>
           ) : (

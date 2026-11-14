@@ -35,6 +35,7 @@ function formatKickoff(value: string | null) {
 
 function toMatch(match: ApiMatch): Match {
   const isLive = match.status.toLowerCase() === 'live'
+  const isFinished = match.status.toLowerCase() === 'finished'
   const kickoff = formatKickoff(match.kickoffAt || match.matchTime)
 
   return {
@@ -49,6 +50,7 @@ function toMatch(match: ApiMatch): Match {
     homeScore: isLive ? match.homeScore ?? undefined : undefined,
     awayScore: isLive ? match.awayScore ?? undefined : undefined,
     isLive,
+    isFinished,
     date: kickoff.date,
     homeCrestUrl: match.homeTeam.crestUrl,
     awayCrestUrl: match.awayTeam.crestUrl,
@@ -147,7 +149,7 @@ export default function Home() {
   }, [])
 
   const liveMatches = matches.filter((match) => match.isLive)
-  const upcomingMatches = matches.filter((match) => !match.isLive)
+  const upcomingMatches = matches.filter((match) => !match.isLive && !match.isFinished)
   const visibleMatches = activeTab === 'live' ? liveMatches : upcomingMatches
   const linkedLeagues = getLinkedLeagues(leagues)
 

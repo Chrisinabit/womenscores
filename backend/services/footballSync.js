@@ -14,6 +14,7 @@ const standingsIncludes = 'participant;details'
 const liveCacheTtlMs = 20_000
 const requestIntervalMs = Number(process.env.SPORTMONKS_MIN_INTERVAL_MS || 1000)
 const upcomingFixtureDays = Number(process.env.UPCOMING_FIXTURE_DAYS || 14)
+const pastFixtureDays = Number(process.env.PAST_FIXTURE_DAYS || 7)
 const activeStates = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'INT'])
 const finishedStates = new Set(['FT', 'AET', 'FT_PEN', 'AWD', 'WO'])
 const stateMap = new Map([
@@ -47,6 +48,10 @@ if (!Number.isInteger(requestIntervalMs) || requestIntervalMs < 0) {
 
 if (!Number.isInteger(upcomingFixtureDays) || upcomingFixtureDays < 1 || upcomingFixtureDays > 30) {
   throw new Error('UPCOMING_FIXTURE_DAYS must be an integer between 1 and 30')
+}
+
+if (!Number.isInteger(pastFixtureDays) || pastFixtureDays < 0 || pastFixtureDays > 30) {
+  throw new Error('PAST_FIXTURE_DAYS must be an integer between 0 and 30')
 }
 
 function requireApiToken() {
@@ -630,7 +635,7 @@ export async function syncAllFootballData() {
     const leagueIds = [...trackedLeagues.keys()]
     let fixtureCount = 0
 
-    for (let offset = 0; offset < upcomingFixtureDays; offset += 1) {
+    for (let offset = -pastFixtureDays; offset < upcomingFixtureDays; offset += 1) {
       const fixtures = await getFixturesForDate(dateForOffset(offset), leagueIds)
       fixtureCount += await persistFixtures(fixtures, trackedLeagues)
     }

@@ -90,7 +90,7 @@ app.get('/api/matches', async (_request, response, next) => {
         AND l.sportmonks_id IS NOT NULL
         AND home_team.sportmonks_id IS NOT NULL
         AND away_team.sportmonks_id IS NOT NULL
-        AND LOWER(m.status) IN ('live', 'scheduled')
+        AND LOWER(m.status) IN ('live', 'scheduled', 'finished')
       ORDER BY m.kickoff_at ASC NULLS LAST, m.match_time ASC
     `)
 
