@@ -22,8 +22,6 @@ function formatFixtureDate(value: string | null) {
       weekday: 'short',
       day: '2-digit',
       month: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
     }).format(date)
 }
 
@@ -170,19 +168,21 @@ export default function CompetitionDetail() {
               </div>
               <div className="flex flex-col gap-2">
                 {schedule.map((match, index) => (
-                  <article key={match.matchId} className="grid grid-cols-[90px_1fr_auto] items-center gap-3 border border-emerald-400/15 bg-[#08281f]/70 px-4 py-4 sm:grid-cols-[120px_1fr_auto_100px]">
-                    <span className="text-[9px] font-medium tracking-wide text-gray-500">{formatFixtureDate(match.kickoffAt || match.matchTime)}</span>
-                    <div className="min-w-0 text-xs font-medium text-white">
-                      <span className="truncate">{match.homeTeam.name}</span>
-                      <span className="px-2 text-gray-600">vs</span>
-                      <span className="truncate">{match.awayTeam.name}</span>
+                  <article key={match.matchId} className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1.5 border border-emerald-400/15 bg-[#08281f]/70 px-4 py-3.5 sm:grid-cols-[120px_1fr_auto_100px] sm:gap-3 sm:py-4">
+                    <span className="col-start-1 row-start-1 text-[9px] font-medium tracking-wide text-gray-500">
+                      {formatFixtureDate(match.kickoffAt || match.matchTime)}
+                    </span>
+                    <div className="col-span-2 row-start-2 flex min-w-0 items-center gap-2 text-xs font-medium text-white sm:col-span-1 sm:col-start-2 sm:row-start-1">
+                      <span className="min-w-0 truncate">{match.homeTeam.name}</span>
+                      <span className="shrink-0 text-gray-600">vs</span>
+                      <span className="min-w-0 truncate">{match.awayTeam.name}</span>
                     </div>
-                    <strong className="text-xs tabular-nums text-white">
+                    <strong className="col-start-2 row-start-1 text-right text-xs tabular-nums text-white sm:col-start-3 sm:row-start-1">
                       {match.status.toLowerCase() === 'live'
                         ? `${match.homeScore ?? 0} – ${match.awayScore ?? 0}`
                         : formatFixtureTime(match.kickoffAt || match.matchTime)}
                     </strong>
-                    <span className="hidden text-right text-[9px] text-gray-500 sm:block">
+                    <span className="hidden text-right text-[9px] text-gray-500 sm:col-start-4 sm:row-start-1 sm:block">
                       {match.status.toLowerCase() === 'live'
                         ? match.minute === null ? 'LIVE' : `LIVE · ${match.minute}'`
                         : match.status.toUpperCase()}
