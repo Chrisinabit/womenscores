@@ -40,7 +40,7 @@ export default function LiveMatchCard({ match }: { match: Match }) {
                 <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-60" />
                 <span className="relative inline-flex size-2 rounded-full bg-emerald-400" />
               </span>
-              LIVE {match.status}
+              LIVE{match.status === 'LIVE' ? '' : ` ${match.status}`}
             </>
           ) : (
             <>
