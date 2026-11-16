@@ -1,8 +1,10 @@
 import { Clock3, Star, Trophy } from 'lucide-react'
 
 export type Match = {
+  matchId: number
   league: string
   status: string
+  kickoffAt: string | null
   home: string
   away: string
   homeInitials: string
@@ -25,9 +27,21 @@ function TeamCrest({ initials, crestUrl, away = false }: { initials: string; cre
   )
 }
 
-export default function LiveMatchCard({ match }: { match: Match }) {
+export default function LiveMatchCard({
+  match,
+  onSelect,
+}: {
+  match: Match
+  onSelect: (match: Match) => void
+}) {
   return (
-    <article className="group border border-emerald-400/15 border-l-2 border-l-amber-300/80 bg-[#08281f]/85 px-4 py-4 transition-colors hover:border-emerald-300/40 hover:bg-[#0a3024] sm:px-5">
+    <article className="group border border-emerald-400/15 border-l-2 border-l-amber-300/80 bg-[#08281f]/85 transition-colors hover:border-emerald-300/40 hover:bg-[#0a3024]">
+      <button
+        type="button"
+        className="block w-full cursor-pointer px-4 pt-4 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300 sm:px-5"
+        onClick={() => onSelect(match)}
+        aria-label={`Open match centre: ${match.home} versus ${match.away}`}
+      >
       <div className="flex items-center justify-between gap-3">
         <span className="inline-flex items-center gap-2 text-[10px] font-medium text-gray-400">
           <Trophy size={13} className="text-amber-300" />
@@ -73,12 +87,13 @@ export default function LiveMatchCard({ match }: { match: Match }) {
           <TeamCrest initials={match.awayInitials} crestUrl={match.awayCrestUrl} away />
         </div>
       </div>
+      </button>
 
-      <div className="flex items-center justify-between border-t border-white/5 pt-3 text-[10px] text-gray-500">
+      <div className="flex items-center justify-between border-t border-white/5 px-4 py-3 text-[10px] text-gray-500 sm:px-5">
         <span>{match.isLive ? 'Live match centre' : 'Fixture details'}</span>
-        <button type="button" className="inline-flex items-center gap-1.5 transition-colors hover:text-amber-300" aria-label={`Add ${match.home} vs ${match.away} to favourites`}>
+        <button type="button" onClick={() => onSelect(match)} className="inline-flex cursor-pointer items-center gap-1.5 transition-colors hover:text-amber-300" aria-label={`Open ${match.home} vs ${match.away} match centre`}>
           <Star size={13} />
-          <span>Follow</span>
+          <span>Match centre</span>
         </button>
       </div>
     </article>

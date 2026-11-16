@@ -1,5 +1,6 @@
-import { ArrowUpRight, Search } from 'lucide-react'
+import { ArrowUpRight } from 'lucide-react'
 import { Link, NavLink, Navigate, Route, Routes } from 'react-router-dom'
+import HeaderQuickSearch from './components/HeaderQuickSearch'
 import Competitions from './pages/Competitions'
 import CompetitionDetail from './pages/CompetitionDetail'
 import Home from './pages/Home'
@@ -31,9 +32,7 @@ function Header() {
             </NavLink>
           ))}
         </nav>
-        <button className="hidden text-gray-300 transition-colors hover:text-amber-300 sm:block" aria-label="Search">
-          <Search size={19} strokeWidth={1.7} />
-        </button>
+        <HeaderQuickSearch />
       </div>
     </header>
   )

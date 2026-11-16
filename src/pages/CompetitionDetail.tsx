@@ -1,16 +1,22 @@
 import { useEffect, useState } from 'react'
 import { ArrowLeft, CalendarDays, Trophy } from 'lucide-react'
-import { Link, Navigate, useParams } from 'react-router-dom'
+import { Link, Navigate, useParams, useSearchParams } from 'react-router-dom'
 import { getCompetitionForLeague, getLeagues, getMatches, getStandings, type ApiMatch } from '../api'
 import LeagueTable from '../components/LeagueTable'
+import LeagueLeaders from '../components/LeagueLeaders'
+import MatchCentreDrawer from '../components/MatchCentreDrawer'
+import type { Match } from '../components/LiveMatchCard'
 import { competitionDirectory, type StandingRow } from '../data/competitions'
+import { getMockLeagueLeaders, type LeagueLeadersResponse } from '../data/mockLeagueLeaders'
+import { getMockClubBySlug } from '../data/mockSearch'
 
-type DetailTab = 'standings' | 'fixtures' | 'results'
+type DetailTab = 'standings' | 'fixtures' | 'results' | 'leaders'
 
 const tabs: { id: DetailTab; label: string }[] = [
   { id: 'standings', label: 'Standings' },
   { id: 'fixtures', label: 'Fixtures' },
   { id: 'results', label: 'Results' },
+  { id: 'leaders', label: 'Stats / Leaders' },
 ]
 
 function formatFixtureDate(value: string | null) {
@@ -33,17 +39,64 @@ function formatFixtureTime(value: string | null) {
     : new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(date)
 }
 
+function toMatchCentreMatch(match: ApiMatch): Match {
+  const status = match.status.toLowerCase()
+  const isLive = status === 'live'
+  const isFinished = status === 'finished'
+  const isPostponed = status === 'postponed'
+  const initials = (name: string, shortName: string | null) => (
+    shortName || name.split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase()
+  )
+
+  return {
+    matchId: match.matchId,
+    league: match.league.name,
+    status: isLive ? match.minute === null ? 'LIVE' : `${match.minute}'` : status,
+    kickoffAt: match.kickoffAt || match.matchTime,
+    home: match.homeTeam.name,
+    away: match.awayTeam.name,
+    homeInitials: initials(match.homeTeam.name, match.homeTeam.shortName),
+    awayInitials: initials(match.awayTeam.name, match.awayTeam.shortName),
+    homeScore: isLive || isFinished ? match.homeScore ?? undefined : undefined,
+    awayScore: isLive || isFinished ? match.awayScore ?? undefined : undefined,
+    isLive,
+    isFinished,
+    isPostponed,
+    homeCrestUrl: match.homeTeam.crestUrl,
+    awayCrestUrl: match.awayTeam.crestUrl,
+  }
+}
+
+function normalizeTeamSlug(name: string) {
+  return name
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\b(women|woman|w|fc|afc)\b/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+}
+
 export default function CompetitionDetail() {
   const { slug } = useParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const selectedTeamSlug = searchParams.get('team')
+  const selectedClub = selectedTeamSlug ? getMockClubBySlug(selectedTeamSlug) : undefined
   const competition = competitionDirectory.find((item) => item.slug === slug)
   const competitionSlug = competition?.slug
-  const [activeTab, setActiveTab] = useState<DetailTab>('standings')
+  const [activeTab, setActiveTab] = useState<DetailTab>(() => selectedTeamSlug ? 'fixtures' : 'standings')
   const [matches, setMatches] = useState<ApiMatch[]>([])
   const [standings, setStandings] = useState<StandingRow[]>([])
+  const [leaders, setLeaders] = useState<LeagueLeadersResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [standingsError, setStandingsError] = useState<string | null>(null)
   const [leagueFound, setLeagueFound] = useState(true)
+  const [selectedMatch, setSelectedMatch] = useState<Match | null>(null)
+
+  useEffect(() => {
+    if (selectedTeamSlug) setActiveTab('fixtures')
+  }, [selectedTeamSlug])
 
   useEffect(() => {
     if (!competitionSlug) return
@@ -53,6 +106,7 @@ export default function CompetitionDetail() {
     setLoadError(null)
     setStandingsError(null)
     setStandings([])
+    setLeaders(null)
     setMatches([])
     setLeagueFound(true)
 
@@ -68,11 +122,13 @@ export default function CompetitionDetail() {
 
         setMatches(apiMatches.filter((match) => match.league.id === league?.id))
 
-        if (!league) {
+        if (!league || !competitionSlug) {
           setLeagueFound(false)
           setStandingsError('This competition is not currently available from the backend API.')
           return
         }
+
+        setLeaders(getMockLeagueLeaders(league.id, competitionSlug))
 
         try {
           setStandings(await getStandings(league.id, controller.signal))
@@ -112,8 +168,15 @@ export default function CompetitionDetail() {
 
   const schedule = activeTab === 'results' ? results : upcoming
   const scheduleTitle = activeTab === 'fixtures' ? 'Upcoming fixtures' : 'Recent results'
+  const filteredSchedule = selectedClub
+    ? schedule.filter((match) => (
+      normalizeTeamSlug(match.homeTeam.name) === selectedClub.slug
+      || normalizeTeamSlug(match.awayTeam.name) === selectedClub.slug
+    ))
+    : schedule
 
   return (
+    <>
     <main className="mx-auto min-h-[calc(100vh-150px)] max-w-6xl px-5 pb-16 pt-8 sm:px-[5vw] sm:pt-12 lg:px-0">
       <Link to="/competitions" className="mb-6 inline-flex items-center gap-2 text-[10px] text-gray-400 transition-colors hover:text-amber-300">
         <ArrowLeft size={13} /> All competitions
@@ -136,14 +199,14 @@ export default function CompetitionDetail() {
       </section>
 
       <section className="mt-8" aria-label={`${competition.name} ${activeTab}`}>
-        <div className="flex gap-6 border-b border-gray-400/20" role="tablist" aria-label="Competition information">
+        <div className="flex gap-4 overflow-x-auto border-b border-gray-400/20 sm:gap-6" role="tablist" aria-label="Competition information">
           {tabs.map((tab) => (
             <button
               key={tab.id}
               type="button"
               role="tab"
               aria-selected={activeTab === tab.id}
-              className={`relative py-3 text-xs transition-colors ${activeTab === tab.id ? 'text-amber-300 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-amber-300' : 'text-gray-500 hover:text-white'}`}
+              className={`relative shrink-0 cursor-pointer whitespace-nowrap py-3 text-xs transition-colors ${activeTab === tab.id ? 'text-amber-300 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-amber-300' : 'text-gray-500 hover:text-white'}`}
               onClick={() => setActiveTab(tab.id)}
             >
               {tab.label}
@@ -158,6 +221,16 @@ export default function CompetitionDetail() {
             </p>
           ) : loading ? (
             <p className="border border-emerald-400/15 px-4 py-8 text-center text-xs text-gray-400">Loading competition data…</p>
+          ) : activeTab === 'leaders' && !leagueFound ? (
+            <p role="status" className="border border-emerald-400/15 bg-[#08281f]/70 px-5 py-10 text-center text-xs text-gray-400">
+              {standingsError || 'This competition is not currently available from the backend API.'}
+            </p>
+          ) : activeTab === 'leaders' && leaders ? (
+            <LeagueLeaders scorers={leaders.topScorers} assists={leaders.topAssists} />
+          ) : activeTab === 'leaders' ? (
+            <p className="border border-emerald-400/15 bg-[#08281f]/70 px-5 py-10 text-center text-xs text-gray-400">
+              No leader data is available yet.
+            </p>
           ) : activeTab === 'standings' && standingsError ? (
             <p role={leagueFound ? 'alert' : 'status'} className="border border-emerald-400/15 bg-[#08281f]/70 px-5 py-10 text-center text-xs text-gray-400">
               {standingsError}
@@ -176,15 +249,39 @@ export default function CompetitionDetail() {
                 The backend has no standings data for this league yet.
               </p>
             </div>
-          ) : schedule.length > 0 ? (
+          ) : (
             <section aria-label={scheduleTitle}>
-              <div className="mb-3 flex items-center gap-2 text-[10px] text-gray-400">
-                <CalendarDays size={13} className="text-amber-300" />
-                {scheduleTitle} · Live API data
-              </div>
-              <div className="flex flex-col gap-2">
-                {schedule.map((match, index) => (
-                  <article key={match.matchId} className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1.5 border border-emerald-400/15 bg-[#08281f]/70 px-4 py-3.5 sm:grid-cols-[120px_1fr_auto_100px] sm:gap-3 sm:py-4">
+              {selectedClub && (
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border border-emerald-400/15 bg-[#08281f]/70 px-3 py-2.5 text-[10px]">
+                  <span className="text-gray-300">Showing {scheduleTitle.toLowerCase()} for <strong className="text-amber-200">{selectedClub.name}</strong></span>
+                  <button
+                    type="button"
+                    className="cursor-pointer text-emerald-300 underline decoration-emerald-300/30 underline-offset-2 hover:text-white"
+                    onClick={() => setSearchParams((current) => {
+                      const next = new URLSearchParams(current)
+                      next.delete('team')
+                      return next
+                    }, { replace: true })}
+                  >
+                    Clear team filter
+                  </button>
+                </div>
+              )}
+              {filteredSchedule.length > 0 ? (
+                <>
+                  <div className="mb-3 flex items-center gap-2 text-[10px] text-gray-400">
+                    <CalendarDays size={13} className="text-amber-300" />
+                    {scheduleTitle} · Live API data
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    {filteredSchedule.map((match, index) => (
+                  <button
+                    key={match.matchId}
+                    type="button"
+                    onClick={() => setSelectedMatch(toMatchCentreMatch(match))}
+                    aria-label={`Open match centre: ${match.homeTeam.name} versus ${match.awayTeam.name}`}
+                    className="grid w-full cursor-pointer grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1.5 border border-emerald-400/15 bg-[#08281f]/70 px-4 py-3.5 text-left transition-colors hover:border-emerald-300/30 hover:bg-[#0a3024] focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300 sm:grid-cols-[120px_1fr_auto_100px] sm:gap-3 sm:py-4"
+                  >
                     <span className="col-start-1 row-start-1 text-[9px] font-medium tracking-wide text-gray-500">
                       {formatFixtureDate(match.kickoffAt || match.matchTime)}
                     </span>
@@ -206,29 +303,31 @@ export default function CompetitionDetail() {
                         : match.status.toUpperCase()}
                     </span>
                     <span className="sr-only">Fixture {index + 1}</span>
-                  </article>
+                  </button>
                 ))}
-              </div>
+                  </div>
+                </>
+              ) : (
+                <div className="border border-emerald-400/15 bg-[#08281f]/70 px-5 py-10 text-center">
+                  <CalendarDays size={22} className="mx-auto text-amber-300" />
+                  <h2 className="mt-3 text-sm font-medium text-white">
+                    {selectedClub
+                      ? `No ${activeTab === 'results' ? 'recent results' : 'upcoming fixtures'} for ${selectedClub.name}`
+                      : activeTab === 'results' ? 'No recent results available' : 'No upcoming fixtures available'}
+                  </h2>
+                  <p className="mx-auto mt-2 max-w-md text-xs leading-5 text-gray-400">
+                    {selectedClub
+                      ? 'There are no matching matches in the current data window.'
+                      : `The backend has no ${activeTab === 'results' ? 'finished matches' : 'scheduled matches'} for this league yet.`}
+                  </p>
+                </div>
+              )}
             </section>
-          ) : activeTab === 'results' ? (
-            <div className="border border-emerald-400/15 bg-[#08281f]/70 px-5 py-10 text-center">
-              <CalendarDays size={22} className="mx-auto text-amber-300" />
-              <h2 className="mt-3 text-sm font-medium text-white">No recent results available</h2>
-              <p className="mx-auto mt-2 max-w-md text-xs leading-5 text-gray-400">
-                The backend has no finished matches for this league in the recent window.
-              </p>
-            </div>
-          ) : (
-            <div className="border border-emerald-400/15 bg-[#08281f]/70 px-5 py-10 text-center">
-              <CalendarDays size={22} className="mx-auto text-amber-300" />
-              <h2 className="mt-3 text-sm font-medium text-white">No upcoming fixtures available</h2>
-              <p className="mx-auto mt-2 max-w-md text-xs leading-5 text-gray-400">
-                The backend has no scheduled matches for this league yet.
-              </p>
-            </div>
           )}
         </div>
       </section>
     </main>
+    <MatchCentreDrawer match={selectedMatch} onClose={() => setSelectedMatch(null)} />
+    </>
   )
 }

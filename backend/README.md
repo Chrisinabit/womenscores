@@ -10,7 +10,7 @@ Apply the database migrations before starting the server:
 npm run db:migrate
 ```
 
-The migrations add Sportmonks-specific ID columns and a current season ID while preserving existing local IDs and API-Football/sample rows. Those legacy rows remain in the database but are excluded from API responses. The migrations also create the indexes needed for upserts and synchronize local ID sequences. If `standings` already has duplicate `(league_id, team_id)` pairs, reconcile them before applying migration 001.
+The migrations add Sportmonks-specific ID columns and a current season ID while preserving existing local IDs and API-Football/sample rows. Those legacy rows remain in the database but are excluded from API responses. Migration 004 adds match detail JSONB fields, Sportmonks-ID-keyed players/events/lineups, season player statistics, and poll vote counts. The migrations also create the indexes needed for upserts and synchronize local ID sequences. If `standings` already has duplicate `(league_id, team_id)` pairs, reconcile them before applying migration 001.
 
 Start the API and five-minute live-fixture job with:
 
@@ -21,10 +21,18 @@ npm run dev
 ## Sync behavior
 
 - `POST /api/sync` discovers leagues available to your token from `GET /leagues?include=currentSeason;country`, follows cursor pagination, and whitelists the requested women's competitions. League and current-season IDs are stored in the database.
-- A full sync imports standings and fixtures for the next 14 days and the previous 7 days. The fixtures-by-date endpoint returns a single date, so the service requests each date with a filter for the selected league IDs. Set `UPCOMING_FIXTURE_DAYS` to a value from 1 to 30 and `PAST_FIXTURE_DAYS` to a value from 0 to 30.
+- A full sync imports standings, top scorers/assists, and fixtures for the next 14 days and the previous 7 days. The fixtures-by-date endpoint returns a single date, so the service requests each date with a filter for the selected league IDs. Set `UPCOMING_FIXTURE_DAYS` to a value from 1 to 30 and `PAST_FIXTURE_DAYS` to a value from 0 to 30.
+- Fixture sync requests venue, referee, broadcast stations, events, lineups, and statistics. If an optional include is rejected for a token tier, the service retries with the core fixture includes and preserves previously synced enrichment where the provider omitted fields.
 - The cron job requests in-play livescores every five minutes. Repeated in-play API calls are cached in memory for 20 seconds to coalesce duplicate requests. A server restart clears that cache.
 - API requests are serialized with a default one-second minimum interval. Set `SPORTMONKS_MIN_INTERVAL_MS` to match your subscription limits.
 - In development, the manual endpoint is available without a token. In production, set `SYNC_API_SECRET` and send `Authorization: Bearer <secret>`; if it is unset, the endpoint is disabled.
+
+## Match detail endpoints
+
+- `GET /api/matches/:id` returns match metadata, events, home/away lineups, statistics, broadcast stations, and poll totals. The `:id` is the local match ID returned by `GET /api/matches`.
+- `GET /api/leagues/:id/leaders` returns the current season's top scorers and assist leaders.
+- `GET /api/search?q=<text>` searches synced club and player names.
+- `POST /api/matches/:id/vote` accepts `{ "choice": "home" | "draw" | "away" }` and atomically increments that match's public vote count. Votes are currently anonymous and are not deduplicated.
 
 Example development request:
 

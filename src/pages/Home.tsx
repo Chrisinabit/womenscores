@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { ArrowRight, ArrowUpRight, Trophy } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import LiveMatchCard, { type Match } from '../components/LiveMatchCard'
+import MatchCentreDrawer from '../components/MatchCentreDrawer'
 import { getCompetitionForLeague, getLeagues, getMatches, type ApiMatch, type ApiLeague } from '../api'
 import { competitionDirectory } from '../data/competitions'
 
@@ -41,16 +42,18 @@ function toMatch(match: ApiMatch): Match {
   const kickoff = formatKickoff(match.kickoffAt || match.matchTime)
 
   return {
+    matchId: match.matchId,
     league: match.league.name,
     status: isLive
       ? match.minute === null ? 'LIVE' : `${match.minute}'`
       : isPostponed ? 'PP' : kickoff.time,
+    kickoffAt: match.kickoffAt || match.matchTime,
     home: match.homeTeam.name,
     away: match.awayTeam.name,
     homeInitials: initials(match.homeTeam.name, match.homeTeam.shortName),
     awayInitials: initials(match.awayTeam.name, match.awayTeam.shortName),
-    homeScore: isLive ? match.homeScore ?? undefined : undefined,
-    awayScore: isLive ? match.awayScore ?? undefined : undefined,
+    homeScore: isLive || isFinished ? match.homeScore ?? undefined : undefined,
+    awayScore: isLive || isFinished ? match.awayScore ?? undefined : undefined,
     isLive,
     isFinished,
     isPostponed,
@@ -113,6 +116,7 @@ export default function Home() {
   const [leagues, setLeagues] = useState<ApiLeague[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [selectedMatch, setSelectedMatch] = useState<Match | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -159,6 +163,7 @@ export default function Home() {
   const linkedLeagues = getLinkedLeagues(leagues)
 
   return (
+    <>
     <main className="mx-auto max-w-6xl px-5 pb-12 pt-8 sm:px-[5vw] sm:pt-10 lg:px-0">
       <Hero />
 
@@ -176,7 +181,7 @@ export default function Home() {
                 type="button"
                 role="tab"
                 aria-selected={activeTab === 'live'}
-                className={activeTab === 'live' ? 'border-b border-amber-300 pb-1 text-amber-300' : 'text-gray-500 transition-colors hover:text-white'}
+                className={activeTab === 'live' ? 'cursor-pointer border-b border-amber-300 pb-1 text-amber-300' : 'cursor-pointer text-gray-500 transition-colors hover:text-white'}
                 onClick={() => setActiveTab('live')}
               >
                 <span className="mr-1.5 inline-block size-1.5 rounded-full bg-emerald-400" />Live <span className="ml-1 text-gray-400">{loading ? '…' : liveMatches.length}</span>
@@ -185,7 +190,7 @@ export default function Home() {
                 type="button"
                 role="tab"
                 aria-selected={activeTab === 'upcoming'}
-                className={activeTab === 'upcoming' ? 'border-b border-amber-300 pb-1 text-amber-300' : 'text-gray-500 transition-colors hover:text-white'}
+                className={activeTab === 'upcoming' ? 'cursor-pointer border-b border-amber-300 pb-1 text-amber-300' : 'cursor-pointer text-gray-500 transition-colors hover:text-white'}
                 onClick={() => setActiveTab('upcoming')}
               >
                 Upcoming
@@ -206,13 +211,17 @@ export default function Home() {
           ) : (
             <div className="mt-4 flex flex-col gap-2.5">
               {visibleMatches.map((match) => (
-                <LiveMatchCard key={`${match.league}-${match.home}-${match.away}`} match={match} />
+                <LiveMatchCard
+                  key={match.matchId}
+                  match={match}
+                  onSelect={setSelectedMatch}
+                />
               ))}
             </div>
           )}
           <button
             type="button"
-            className="mt-4 w-full border border-amber-300/35 py-3 text-[11px] text-amber-300 transition-colors hover:bg-emerald-500/10"
+            className="mt-4 w-full cursor-pointer border border-amber-300/35 py-3 text-[11px] text-amber-300 transition-colors hover:bg-emerald-500/10"
             onClick={() => setActiveTab(activeTab === 'live' ? 'upcoming' : 'live')}
           >
             {activeTab === 'live' ? 'View upcoming fixtures' : 'Back to live scores'} <span className="ml-1">→</span>
@@ -252,5 +261,7 @@ export default function Home() {
         </aside>
       </div>
     </main>
+    <MatchCentreDrawer match={selectedMatch} onClose={() => setSelectedMatch(null)} />
+    </>
   )
 }

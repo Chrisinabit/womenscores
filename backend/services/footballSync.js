@@ -8,9 +8,11 @@ const api = axios.create({
   timeout: 20_000,
 })
 
-const liveIncludes = 'participants;scores;periods;events;league;state'
-const fixtureIncludes = 'participants;scores;state;league'
+const fixtureIncludes = 'participants;scores;venue;referees;tvstations.tvstation;events;lineups;statistics;state;league;periods'
+const fixtureFallbackIncludes = 'participants;scores;state;league;periods'
+const liveIncludes = fixtureIncludes
 const standingsIncludes = 'participant;details'
+const topScorersIncludes = 'player;participant;type'
 const liveCacheTtlMs = 20_000
 const requestIntervalMs = Number(process.env.SPORTMONKS_MIN_INTERVAL_MS || 1000)
 const upcomingFixtureDays = Number(process.env.UPCOMING_FIXTURE_DAYS || 14)
@@ -90,7 +92,12 @@ async function getPage(path, params) {
       lastRequestAt = Date.now()
 
       if (data.errors && Object.keys(data.errors).length > 0) {
-        throw new Error(`Sportmonks rejected ${path}: ${JSON.stringify(data.errors)}`)
+        const providerError = new Error(`Sportmonks rejected ${path}: ${JSON.stringify(data.errors)}`)
+        if (Object.hasOwn(data, 'data') && isRestrictedIncludeError(providerError)) {
+          console.warn(`Sportmonks returned partial data for ${path}: ${JSON.stringify(data.errors)}`)
+        } else {
+          throw providerError
+        }
       }
 
       if (!Object.hasOwn(data, 'data')) {
@@ -130,6 +137,22 @@ async function getAllData(path, params = {}) {
 
     if (!payload.pagination?.has_more) {
       return items
+    }
+
+    function isRestrictedIncludeError(error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return /HTTP (?:400|403)|include.{0,60}(?:restrict|not available|not allowed|permission|plan|trial|invalid)|(?:trial|subscription).{0,60}include/i.test(message)
+    }
+
+    async function getAllDataWithOptionalIncludes(path, params, fallbackIncludes) {
+      try {
+        return await getAllData(path, params)
+      } catch (error) {
+        if (!isRestrictedIncludeError(error)) throw error
+
+        console.warn(`Retrying Sportmonks ${path} without optional enrichment includes`)
+        return getAllData(path, { ...params, include: fallbackIncludes })
+      }
     }
 
     cursor = payload.pagination.next_cursor
@@ -361,6 +384,124 @@ async function syncStandings(league, localLeagueId) {
   return standings.length
 }
 
+function topScorerStatField(row) {
+  const type = relationValue(row.type)
+  const name = normalizeText(type?.name || stringValue(row.type) || row.type_name || row.name || '')
+
+  if (name.includes('appearance') || name.includes('matches played')) return 'appearances'
+  if (name.includes('yellow')) return 'yellow_cards'
+  if (name.includes('red')) return 'red_cards'
+  if (name.includes('assist')) return 'assists'
+  if (name.includes('goal')) return 'goals'
+  return null
+}
+
+export async function syncTopScorers(seasonId, leagueId) {
+  const rows = await getAllDataWithOptionalIncludes(
+    `/topscorers/seasons/${seasonId}`,
+    { include: topScorersIncludes, per_page: 50 },
+    'player;participant',
+  )
+  const statsByPlayer = new Map()
+
+  for (const row of rows) {
+    const player = relationValue(row.player)
+    const playerId = await upsertPlayer(
+      player,
+      row.player_id,
+      row.player_name || row.name,
+    )
+    if (!playerId) continue
+
+    const participant = relationValue(row.participant)
+    let teamId = null
+    if (participant?.id && participant?.name) {
+      teamId = await upsertTeam(participant, leagueId)
+    }
+
+    let stats = statsByPlayer.get(playerId)
+    if (!stats) {
+      stats = {
+        teamId,
+        goals: null,
+        assists: null,
+        yellowCards: null,
+        redCards: null,
+        appearances: null,
+        hasValues: false,
+      }
+      statsByPlayer.set(playerId, stats)
+    } else if (teamId !== null) {
+      stats.teamId = teamId
+    }
+
+    const directValues = {
+      goals: numberValue(row.goals),
+      assists: numberValue(row.assists),
+      yellowCards: numberValue(row.yellow_cards),
+      redCards: numberValue(row.red_cards),
+      appearances: numberValue(row.appearances),
+    }
+    for (const [field, value] of Object.entries(directValues)) {
+      if (value !== null) {
+        stats[field] = Math.trunc(value)
+        stats.hasValues = true
+      }
+    }
+
+    const field = topScorerStatField(row)
+    const value = numberValue(row.total ?? row.value ?? row.data?.value)
+    if (field && value !== null) {
+      const property = field === 'yellow_cards'
+        ? 'yellowCards'
+        : field === 'red_cards'
+          ? 'redCards'
+          : field
+      stats[property] = Math.trunc(value)
+      stats.hasValues = true
+    }
+  }
+
+  let syncedCount = 0
+  for (const [playerId, stats] of statsByPlayer) {
+    if (!stats.hasValues) continue
+
+    await pool.query(
+      `
+        INSERT INTO player_season_stats (
+          player_id, season_id, league_id, team_id,
+          goals, assists, yellow_cards, red_cards, appearances
+        )
+        VALUES (
+          $1, $2, $3, $4, COALESCE($5, 0), COALESCE($6, 0),
+          COALESCE($7, 0), COALESCE($8, 0), COALESCE($9, 0)
+        )
+        ON CONFLICT (player_id, season_id, league_id) DO UPDATE
+        SET team_id = COALESCE(EXCLUDED.team_id, player_season_stats.team_id),
+            goals = COALESCE($5, player_season_stats.goals),
+            assists = COALESCE($6, player_season_stats.assists),
+            yellow_cards = COALESCE($7, player_season_stats.yellow_cards),
+            red_cards = COALESCE($8, player_season_stats.red_cards),
+            appearances = COALESCE($9, player_season_stats.appearances)
+      `,
+      [
+        playerId,
+        seasonId,
+        leagueId,
+        stats.teamId,
+        stats.goals,
+        stats.assists,
+        stats.yellowCards,
+        stats.redCards,
+        stats.appearances,
+      ],
+    )
+    syncedCount += 1
+  }
+
+  return syncedCount
+}
+
 async function getMatchTimeDataType() {
   if (matchTimeType) return matchTimeType
 
@@ -424,34 +565,372 @@ function normalizedStatus(shortName) {
 }
 
 function getParticipants(fixture) {
-  const participants = fixture.participants || []
+  const participants = relationArray(fixture.participants)
+  const participantLocation = (participant) => relationValue(participant.meta)?.location
   return {
-    home: participants.find((participant) => participant.meta?.location === 'home'),
-    away: participants.find((participant) => participant.meta?.location === 'away'),
+    home: participants.find((participant) => participantLocation(participant) === 'home'),
+    away: participants.find((participant) => participantLocation(participant) === 'away'),
   }
 }
 
 function getCurrentScores(fixture) {
-  const scores = (fixture.scores || []).filter((score) => score.description === 'CURRENT')
-  return Object.fromEntries(
-    scores.map((score) => [
-      score.score?.participant,
-      score.score?.goals !== null && Number.isFinite(Number(score.score?.goals))
-        ? Number(score.score.goals)
-        : null,
-    ]),
-  )
+  const scores = relationArray(fixture.scores).filter((score) => score.description === 'CURRENT')
+  return Object.fromEntries(scores.map((score) => {
+    const currentScore = relationValue(score.score)
+    return [currentScore?.participant, numberValue(currentScore?.goals)]
+  }))
 }
 
 function fixtureMinute(fixture) {
-  const period = (fixture.periods || []).find((item) => item.ticking === true)
-  return Number.isInteger(period?.minutes) ? period.minutes : null
+  const period = relationArray(fixture.periods).find((item) => item.ticking === true)
+  return integerValue(period?.minutes)
+}
+
+function relationValue(value) {
+  if (Array.isArray(value)) return value.length > 0 ? relationValue(value[0]) : null
+  if (!value || typeof value !== 'object') return null
+  if (isDataEnvelope(value)) return relationValue(value.data)
+  return value
+}
+
+function relationArray(value) {
+  if (Array.isArray(value)) return value.flatMap(relationArray)
+  if (!value || typeof value !== 'object') return []
+  if (isDataEnvelope(value)) return relationArray(value.data)
+  return [value]
+}
+
+function isDataEnvelope(value) {
+  return Object.hasOwn(value, 'data')
+    && !['id', 'type', 'type_id', 'participant_id', 'match_id', 'player_id', 'name']
+      .some((key) => Object.hasOwn(value, key))
+}
+
+function stringValue(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function numberValue(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value !== 'string') return null
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function integerValue(value) {
+  const parsed = numberValue(value)
+  return parsed === null ? null : Math.trunc(parsed)
+}
+
+function playerName(player) {
+  return stringValue(player?.common_name)
+    || stringValue(player?.display_name)
+    || stringValue(player?.name)
+    || [player?.firstname, player?.lastname].map(stringValue).filter(Boolean).join(' ')
+    || null
+}
+
+async function upsertPlayer(value, fallbackId, fallbackName) {
+  if (!value && fallbackId === undefined && fallbackName === undefined) return null
+  const player = relationValue(value) || {}
+  const id = integerValue(player.id ?? player.player_id ?? fallbackId)
+  const name = playerName(player) || stringValue(fallbackName)
+
+  if (!id || id < 1 || !name) {
+    console.warn('Skipping Sportmonks player without a valid ID and name')
+    return null
+  }
+
+  const position = relationValue(player.position)
+  const { rows } = await pool.query(
+    `
+      INSERT INTO players (id, name, common_name, position_name, image_url)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (id) DO UPDATE
+      SET name = EXCLUDED.name,
+          common_name = COALESCE(EXCLUDED.common_name, players.common_name),
+          position_name = COALESCE(EXCLUDED.position_name, players.position_name),
+          image_url = COALESCE(EXCLUDED.image_url, players.image_url)
+      RETURNING id
+    `,
+    [
+      id,
+      name,
+      stringValue(player.common_name),
+      stringValue(position?.name)
+        || stringValue(typeof player.position === 'string' ? player.position : null)
+        || stringValue(player.position_name),
+      stringValue(player.image_path) || stringValue(player.image_url),
+    ],
+  )
+
+  return Number(rows[0].id)
+}
+
+function hasIncludedField(fixture, names) {
+  return names.some((name) => Object.hasOwn(fixture, name))
+}
+
+function venueName(fixture) {
+  const venue = relationValue(fixture.venue)
+  return stringValue(venue?.name)
+}
+
+function refereeName(fixture) {
+  const referees = relationArray(fixture.referees)
+  const mainReferee = referees.find((entry) => (
+    normalizeText(relationValue(entry.type)?.name || entry.type?.name || '').includes('referee')
+  ))
+  const referee = relationValue((mainReferee || referees[0])?.referee) || mainReferee || referees[0]
+  return referee ? playerName(referee) : null
+}
+
+function tvStations(fixture) {
+  if (!hasIncludedField(fixture, ['tvstations', 'tv_stations', 'tvStations'])) return null
+
+  const stations = relationArray(fixture.tvstations ?? fixture.tv_stations ?? fixture.tvStations)
+  const uniqueStations = new Map()
+
+  for (const entry of stations) {
+    const station = relationValue(entry.tvstation || entry.tvStation) || entry
+    const name = stringValue(station.name)
+    if (!name) continue
+
+    const country = relationValue(station.country)
+    const countryName = typeof country === 'string'
+      ? stringValue(country)
+      : stringValue(country?.name)
+    const logo = stringValue(station.image_path)
+      || stringValue(station.logo)
+      || stringValue(station.logo_url)
+      || stringValue(station.image_url)
+    const key = `${name.toLowerCase()}|${countryName || ''}`
+    uniqueStations.set(key, { name, country: countryName || '', logo })
+  }
+
+  return [...uniqueStations.values()]
+}
+
+function statisticKey(entry) {
+  const type = relationValue(entry.type)
+  const name = normalizeText(type?.name || stringValue(entry.type) || entry.type_name || entry.name || '')
+
+  if (name.includes('possession')) return 'possession'
+  if (name.includes('shots on target') || name.includes('shots on goal')) return 'shots_on_target'
+  if (name.includes('total shots') || name === 'shots' || name.includes('shots total')) return 'total_shots'
+  if (name.includes('corner')) return 'corners'
+  return null
+}
+
+function normalizeStatistics(fixture, homeParticipantId, awayParticipantId) {
+  if (!hasIncludedField(fixture, ['statistics', 'stats'])) return null
+
+  let raw = fixture.statistics ?? fixture.stats
+  while (raw && !Array.isArray(raw) && typeof raw === 'object' && isDataEnvelope(raw)) {
+    raw = raw.data
+  }
+
+  if (raw && !Array.isArray(raw) && typeof raw === 'object') {
+    const isStatistic = Object.hasOwn(raw, 'type')
+      || Object.hasOwn(raw, 'type_id')
+      || Object.hasOwn(raw, 'participant_id')
+    if (!isStatistic) return raw
+    raw = [raw]
+  }
+
+  const result = {}
+  for (const entry of relationArray(raw)) {
+    const key = statisticKey(entry)
+    const value = numberValue(entry.data?.value ?? entry.value)
+    if (!key || value === null) continue
+
+    const participant = relationValue(entry.participant)
+    const participantId = integerValue(entry.participant_id ?? participant?.id)
+    const location = normalizeText(participant?.meta?.location || entry.location || '')
+    const side = participantId === Number(homeParticipantId) || location === 'home'
+      ? 'home'
+      : participantId === Number(awayParticipantId) || location === 'away'
+        ? 'away'
+        : null
+    if (!side) continue
+
+    result[key] ||= {}
+    result[key][side] = value
+  }
+
+  return result
+}
+
+function formationFor(fixture, side, participantId) {
+  const formations = fixture.formations ?? fixture.formation
+  if (Array.isArray(formations)) {
+    const entry = formations.find((item) => (
+      Number(item.participant_id || item.team_id) === Number(participantId)
+    ))
+    return stringValue(entry?.formation) || stringValue(entry?.name)
+  }
+
+  const value = formations?.[side]
+    || formations?.[`${side}_formation`]
+    || fixture[`${side}_formation`]
+  const formation = relationValue(value)
+  return typeof value === 'string'
+    ? stringValue(value)
+    : stringValue(formation?.formation) || stringValue(formation?.name)
+}
+
+function lineupType(lineup) {
+  const type = relationValue(lineup.type)
+  const name = normalizeText(type?.name || stringValue(lineup.type) || lineup.type_name || '')
+  const typeId = integerValue(lineup.type_id ?? type?.id)
+  return name.includes('sub') || name.includes('bench') || typeId === 12
+    ? 'substitute'
+    : 'starting_xi'
+}
+
+function lineupPosition(lineup) {
+  const position = relationValue(lineup.position)
+  return stringValue(position?.name)
+    || stringValue(lineup.position_name)
+    || stringValue(lineup.detailed_position)
+}
+
+function eventType(event) {
+  const type = relationValue(event.type)
+  const name = normalizeText(type?.name || event.type_name || event.type || '')
+
+  if (name.includes('goal')) return 'goal'
+  if (name.includes('yellow')) return 'yellow_card'
+  if (name.includes('red')) return 'red_card'
+  if (name.includes('sub')) return 'substitution'
+  return stringValue(type?.name) || stringValue(event.type_name) || String(event.type_id || 'unknown')
+}
+
+function eventTeamId(event, participants, localTeamIds) {
+  const participant = relationValue(event.participant)
+  const team = relationValue(event.team)
+  const participantId = integerValue(event.participant_id ?? participant?.id ?? event.team_id ?? team?.id)
+  if (participantId === Number(participants.home?.id)) return localTeamIds.home
+  if (participantId === Number(participants.away?.id)) return localTeamIds.away
+  return null
+}
+
+async function persistFixtureEvents(fixture, matchId, participants, localTeamIds) {
+  const events = relationArray(fixture.events)
+
+  for (const event of events) {
+    const eventId = integerValue(event.id)
+    if (!eventId || eventId < 1) {
+      console.warn(`Skipping Sportmonks event without a valid ID for fixture ${fixture.id}`)
+      continue
+    }
+
+    const relatedPlayer = event.related_player || event.assist || event.player_out
+    const playerId = await upsertPlayer(event.player, event.player_id, event.player_name)
+    const secondaryPlayerId = await upsertPlayer(
+      relatedPlayer,
+      event.related_player_id || event.assist_id || event.player_out_id,
+      event.related_player_name,
+    )
+    const eventName = eventType(event)
+    const assistName = playerName(relationValue(event.assist) || relationValue(relatedPlayer))
+    const detail = [
+      stringValue(event.info) || stringValue(event.description) || stringValue(event.addition),
+      eventName === 'goal' && assistName ? `Assist: ${assistName}` : null,
+    ].filter(Boolean).join(' · ')
+
+    await pool.query(
+      `
+        INSERT INTO match_events (
+          id, match_id, team_id, player_id, secondary_player_id,
+          event_type, minute, added_time, detail, result
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (id) DO UPDATE
+        SET match_id = EXCLUDED.match_id,
+            team_id = EXCLUDED.team_id,
+            player_id = COALESCE(EXCLUDED.player_id, match_events.player_id),
+            secondary_player_id = COALESCE(EXCLUDED.secondary_player_id, match_events.secondary_player_id),
+            event_type = EXCLUDED.event_type,
+            minute = EXCLUDED.minute,
+            added_time = EXCLUDED.added_time,
+            detail = COALESCE(EXCLUDED.detail, match_events.detail),
+            result = COALESCE(EXCLUDED.result, match_events.result)
+      `,
+      [
+        eventId,
+        matchId,
+        eventTeamId(event, participants, localTeamIds),
+        playerId,
+        secondaryPlayerId,
+        eventName,
+        integerValue(event.minute),
+        integerValue(event.extra_minute ?? event.added_time),
+        detail || null,
+        stringValue(event.result),
+      ],
+    )
+  }
+}
+
+async function persistFixtureLineups(fixture, matchId, participants, localTeamIds) {
+  const lineups = relationArray(fixture.lineups)
+
+  for (const lineup of lineups) {
+    const lineupId = integerValue(lineup.id)
+    if (!lineupId || lineupId < 1) {
+      console.warn(`Skipping Sportmonks lineup row without a valid ID for fixture ${fixture.id}`)
+      continue
+    }
+
+    const playerId = await upsertPlayer(lineup.player, lineup.player_id, lineup.player_name)
+    if (!playerId) continue
+
+    const participant = relationValue(lineup.participant)
+    const team = relationValue(lineup.team)
+    const participantId = integerValue(lineup.participant_id ?? participant?.id ?? lineup.team_id ?? team?.id)
+    const teamId = participantId === Number(participants.home?.id)
+      ? localTeamIds.home
+      : participantId === Number(participants.away?.id)
+        ? localTeamIds.away
+        : null
+    const type = lineupType(lineup)
+    const rating = numberValue(lineup.rating)
+
+    await pool.query(
+      `
+        INSERT INTO match_lineups (
+          id, match_id, team_id, player_id, lineup_type,
+          jersey_number, position_name, rating
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (id) DO UPDATE
+        SET match_id = EXCLUDED.match_id,
+            team_id = EXCLUDED.team_id,
+            player_id = EXCLUDED.player_id,
+            lineup_type = EXCLUDED.lineup_type,
+            jersey_number = EXCLUDED.jersey_number,
+            position_name = EXCLUDED.position_name,
+            rating = COALESCE(EXCLUDED.rating, match_lineups.rating)
+      `,
+      [
+        lineupId,
+        matchId,
+        teamId,
+        playerId,
+        type,
+        integerValue(lineup.jersey_number ?? lineup.number),
+        lineupPosition(lineup),
+        rating,
+      ],
+    )
+  }
 }
 
 export function normalizeFixture(fixture) {
   const participants = getParticipants(fixture)
   const scores = getCurrentScores(fixture)
-  const league = fixture.league || {}
+  const league = relationValue(fixture.league) || {}
 
   if (!participants.home || !participants.away) {
     throw new Error(`Sportmonks fixture ${fixture.id} is missing home or away participants`)
@@ -459,7 +938,7 @@ export function normalizeFixture(fixture) {
 
   return {
     matchId: fixture.id,
-    status: normalizedStatus(fixture.state?.short_name),
+    status: normalizedStatus(relationValue(fixture.state)?.short_name),
     matchTime: fixture.starting_at,
     kickoffAt: fixture.starting_at_timestamp
       ? new Date(Number(fixture.starting_at_timestamp) * 1000).toISOString()
@@ -467,6 +946,12 @@ export function normalizeFixture(fixture) {
     minute: fixtureMinute(fixture),
     homeScore: scores.home ?? null,
     awayScore: scores.away ?? null,
+    venueName: venueName(fixture),
+    refereeName: refereeName(fixture),
+    tvStations: tvStations(fixture) || [],
+    statistics: normalizeStatistics(fixture, participants.home.id, participants.away.id) || {},
+    formationHome: formationFor(fixture, 'home', participants.home.id),
+    formationAway: formationFor(fixture, 'away', participants.away.id),
     league: {
       id: league.id || fixture.league_id,
       name: league.name || '',
@@ -493,7 +978,8 @@ async function persistFixtures(fixtures, trackedLeagues) {
   let saved = 0
 
   for (const fixture of fixtures) {
-    const league = trackedLeagues.get(Number(fixture.league_id || fixture.league?.id))
+    const leagueData = relationValue(fixture.league)
+    const league = trackedLeagues.get(Number(fixture.league_id || leagueData?.id))
     if (!league) continue
 
     const participants = getParticipants(fixture)
@@ -504,63 +990,56 @@ async function persistFixtures(fixtures, trackedLeagues) {
 
     const homeTeamId = await upsertTeam(participants.home, league.id)
     const awayTeamId = await upsertTeam(participants.away, league.id)
-    const status = normalizedStatus(fixture.state?.short_name)
+    const status = normalizedStatus(relationValue(fixture.state)?.short_name)
     const kickoffAt = kickoffDateTime(fixture)
     const matchTime = formatMatchTime(kickoffAt, matchTimeDataType)
     const scores = getCurrentScores(fixture)
     const minute = fixtureMinute(fixture)
-
-    if (status === null) {
-      // No state in the payload: keep whatever status is already stored.
-      await pool.query(
-        `
-          INSERT INTO matches (
-            sportmonks_id, league_id, home_team_id, away_team_id,
-            minute, home_score, away_score, match_time, kickoff_at
-          )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-          ON CONFLICT (sportmonks_id) DO UPDATE
-          SET league_id = EXCLUDED.league_id,
-              home_team_id = EXCLUDED.home_team_id,
-              away_team_id = EXCLUDED.away_team_id,
-              home_score = EXCLUDED.home_score,
-              away_score = EXCLUDED.away_score,
-              match_time = EXCLUDED.match_time,
-              kickoff_at = EXCLUDED.kickoff_at
-        `,
-        [
-          fixture.id,
-          league.id,
-          homeTeamId,
-          awayTeamId,
-          minute,
-          scores.home ?? null,
-          scores.away ?? null,
-          matchTime,
-          kickoffAt,
-        ],
-      )
-      saved += 1
-      continue
-    }
-
-    await pool.query(
+    const stations = tvStations(fixture)
+    const statistics = normalizeStatistics(
+      fixture,
+      participants.home.id,
+      participants.away.id,
+    )
+    const { rows } = await pool.query(
       `
         INSERT INTO matches (
           sportmonks_id, league_id, home_team_id, away_team_id,
-          status, minute, home_score, away_score, match_time, kickoff_at
+          status, minute, home_score, away_score, match_time, kickoff_at,
+          venue_name, referee_name, tv_stations, statistics,
+          formation_home, formation_away
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        VALUES (
+          $1, $2, $3, $4, COALESCE($5, 'scheduled'), $6, $7, $8, $9, $10,
+          $11, $12, COALESCE($13::jsonb, '[]'::jsonb),
+          COALESCE($14::jsonb, '{}'::jsonb), $15, $16
+        )
         ON CONFLICT (sportmonks_id) DO UPDATE
         SET league_id = EXCLUDED.league_id,
             home_team_id = EXCLUDED.home_team_id,
             away_team_id = EXCLUDED.away_team_id,
-            status = EXCLUDED.status,
-            minute = EXCLUDED.minute,
+            status = COALESCE($5, matches.status),
+            minute = CASE
+              WHEN $5 IS NULL THEN COALESCE($6, matches.minute)
+              ELSE $6
+            END,
             home_score = EXCLUDED.home_score,
             away_score = EXCLUDED.away_score,
             match_time = EXCLUDED.match_time,
-            kickoff_at = EXCLUDED.kickoff_at
+            kickoff_at = EXCLUDED.kickoff_at,
+            venue_name = COALESCE(EXCLUDED.venue_name, matches.venue_name),
+            referee_name = COALESCE(EXCLUDED.referee_name, matches.referee_name),
+            tv_stations = CASE
+              WHEN $13 IS NULL THEN matches.tv_stations
+              ELSE EXCLUDED.tv_stations
+            END,
+            statistics = CASE
+              WHEN $14 IS NULL THEN matches.statistics
+              ELSE EXCLUDED.statistics
+            END,
+            formation_home = COALESCE(EXCLUDED.formation_home, matches.formation_home),
+            formation_away = COALESCE(EXCLUDED.formation_away, matches.formation_away)
+        RETURNING id
       `,
       [
         fixture.id,
@@ -568,13 +1047,24 @@ async function persistFixtures(fixtures, trackedLeagues) {
         homeTeamId,
         awayTeamId,
         status,
-        status === 'live' ? minute : null,
+        status === null || status === 'live' ? minute : null,
         scores.home ?? null,
         scores.away ?? null,
         matchTime,
         kickoffAt,
+        venueName(fixture),
+        refereeName(fixture),
+        stations === null ? null : JSON.stringify(stations),
+        statistics === null ? null : JSON.stringify(statistics),
+        formationFor(fixture, 'home', participants.home.id),
+        formationFor(fixture, 'away', participants.away.id),
       ],
     )
+
+    const matchId = Number(rows[0].id)
+    const localTeamIds = { home: homeTeamId, away: awayTeamId }
+    await persistFixtureEvents(fixture, matchId, participants, localTeamIds)
+    await persistFixtureLineups(fixture, matchId, participants, localTeamIds)
     saved += 1
   }
 
@@ -607,11 +1097,11 @@ async function getLiveFixtures(leagueIds) {
     return liveCacheRequest.promise
   }
 
-  const promise = getAllData('/livescores/inplay', {
+  const promise = getAllDataWithOptionalIncludes('/livescores/inplay', {
     filters: `fixtureLeagues:${key}`,
     include: liveIncludes,
     per_page: 50,
-  }).then((fixtures) => {
+  }, fixtureFallbackIncludes).then((fixtures) => {
     liveCache = { key, fixtures, expiresAt: Date.now() + liveCacheTtlMs }
     return fixtures
   }).finally(() => {
@@ -623,11 +1113,11 @@ async function getLiveFixtures(leagueIds) {
 }
 
 async function getFixturesForDate(date, leagueIds) {
-  return getAllData(`/fixtures/date/${date}`, {
+  return getAllDataWithOptionalIncludes(`/fixtures/date/${date}`, {
     filters: `fixtureLeagues:${leagueIds.join(',')}`,
     include: fixtureIncludes,
     per_page: 50,
-  })
+  }, fixtureFallbackIncludes)
 }
 
 function dateForOffset(offset) {
@@ -659,6 +1149,7 @@ export async function syncAllFootballData() {
     const trackedLeagues = new Map()
     let teamCount = 0
     let standingsCount = 0
+    let playerStatsCount = 0
 
     for (const league of discovered) {
       const seasonId = Number(currentSeason(league).id)
@@ -673,6 +1164,7 @@ export async function syncAllFootballData() {
         { name: league.name, seasonId },
         localLeagueId,
       )
+      playerStatsCount += await syncTopScorers(seasonId, localLeagueId)
     }
 
     const leagueIds = [...trackedLeagues.keys()]
@@ -701,6 +1193,7 @@ export async function syncAllFootballData() {
       leagues: discovered.length,
       teams: teamCount,
       standings: standingsCount,
+      playerStats: playerStatsCount,
       fixtures: fixtureCount,
     }
   })
