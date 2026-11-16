@@ -8,11 +8,18 @@ const api = axios.create({
   timeout: 20_000,
 })
 
-const fixtureIncludes = 'participants;scores;venue;referees;tvstations.tvstation;events;lineups;statistics;state;league;periods'
-const fixtureFallbackIncludes = 'participants;scores;state;league;periods'
-const liveIncludes = fixtureIncludes
+const fixtureRequiredIncludes = ['participants', 'scores', 'state', 'league', 'periods']
+const fixtureOptionalIncludes = [
+  'venue',
+  'referees',
+  'tvstations.tvstation',
+  'events',
+  'lineups',
+  'statistics',
+]
 const standingsIncludes = 'participant;details'
-const topScorersIncludes = 'player;participant;type'
+const topScorerRequiredIncludes = ['player', 'participant']
+const topScorerOptionalIncludes = ['type']
 const liveCacheTtlMs = 20_000
 const requestIntervalMs = Number(process.env.SPORTMONKS_MIN_INTERVAL_MS || 1000)
 const upcomingFixtureDays = Number(process.env.UPCOMING_FIXTURE_DAYS || 14)
@@ -93,7 +100,10 @@ async function getPage(path, params) {
 
       if (data.errors && Object.keys(data.errors).length > 0) {
         const providerError = new Error(`Sportmonks rejected ${path}: ${JSON.stringify(data.errors)}`)
-        if (Object.hasOwn(data, 'data') && isRestrictedIncludeError(providerError)) {
+        if (isRestrictedIncludeError(providerError)) {
+          throw providerError
+        }
+        if (Object.hasOwn(data, 'data')) {
           console.warn(`Sportmonks returned partial data for ${path}: ${JSON.stringify(data.errors)}`)
         } else {
           throw providerError
@@ -139,22 +149,6 @@ async function getAllData(path, params = {}) {
       return items
     }
 
-    function isRestrictedIncludeError(error) {
-      const message = error instanceof Error ? error.message : String(error)
-      return /HTTP (?:400|403)|include.{0,60}(?:restrict|not available|not allowed|permission|plan|trial|invalid)|(?:trial|subscription).{0,60}include/i.test(message)
-    }
-
-    async function getAllDataWithOptionalIncludes(path, params, fallbackIncludes) {
-      try {
-        return await getAllData(path, params)
-      } catch (error) {
-        if (!isRestrictedIncludeError(error)) throw error
-
-        console.warn(`Retrying Sportmonks ${path} without optional enrichment includes`)
-        return getAllData(path, { ...params, include: fallbackIncludes })
-      }
-    }
-
     cursor = payload.pagination.next_cursor
     if (!cursor) {
       throw new Error(`Sportmonks indicated more pages for ${path} without a next cursor`)
@@ -162,6 +156,35 @@ async function getAllData(path, params = {}) {
   }
 
   throw new Error(`Sportmonks pagination exceeded 100 pages for ${path}`)
+}
+
+function isRestrictedIncludeError(error) {
+  const message = error instanceof Error ? error.message : String(error)
+  return /HTTP (?:403|422)|include.{0,80}(?:error|restrict|not available|not allowed|not permitted|permission|plan|trial|invalid|unsupported|unknown|not found|unauthorized|forbidden)|(?:trial|subscription).{0,80}include/i.test(message)
+}
+
+async function getAllDataWithOptionalIncludes(
+  endpoint,
+  params,
+  requiredIncludes,
+  optionalIncludes = [],
+) {
+  const includes = [...requiredIncludes, ...optionalIncludes]
+
+  try {
+    return await getAllData(endpoint, {
+      ...params,
+      include: includes.join(';'),
+    })
+  } catch (error) {
+    if (!isRestrictedIncludeError(error)) throw error
+
+    console.warn(`Retrying Sportmonks ${endpoint} with required includes only`)
+    return getAllData(endpoint, {
+      ...params,
+      include: requiredIncludes.join(';'),
+    })
+  }
 }
 
 function normalizeText(value) {
@@ -399,8 +422,9 @@ function topScorerStatField(row) {
 export async function syncTopScorers(seasonId, leagueId) {
   const rows = await getAllDataWithOptionalIncludes(
     `/topscorers/seasons/${seasonId}`,
-    { include: topScorersIncludes, per_page: 50 },
-    'player;participant',
+    { per_page: 50 },
+    topScorerRequiredIncludes,
+    topScorerOptionalIncludes,
   )
   const statsByPlayer = new Map()
 
@@ -1099,9 +1123,8 @@ async function getLiveFixtures(leagueIds) {
 
   const promise = getAllDataWithOptionalIncludes('/livescores/inplay', {
     filters: `fixtureLeagues:${key}`,
-    include: liveIncludes,
     per_page: 50,
-  }, fixtureFallbackIncludes).then((fixtures) => {
+  }, fixtureRequiredIncludes, fixtureOptionalIncludes).then((fixtures) => {
     liveCache = { key, fixtures, expiresAt: Date.now() + liveCacheTtlMs }
     return fixtures
   }).finally(() => {
@@ -1115,9 +1138,8 @@ async function getLiveFixtures(leagueIds) {
 async function getFixturesForDate(date, leagueIds) {
   return getAllDataWithOptionalIncludes(`/fixtures/date/${date}`, {
     filters: `fixtureLeagues:${leagueIds.join(',')}`,
-    include: fixtureIncludes,
     per_page: 50,
-  }, fixtureFallbackIncludes)
+  }, fixtureRequiredIncludes, fixtureOptionalIncludes)
 }
 
 function dateForOffset(offset) {
