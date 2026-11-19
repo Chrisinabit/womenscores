@@ -1,14 +1,12 @@
 import { useEffect, useState } from 'react'
 import { ArrowLeft, CalendarDays, Trophy } from 'lucide-react'
 import { Link, Navigate, useParams, useSearchParams } from 'react-router-dom'
-import { getCompetitionForLeague, getLeagues, getMatches, getStandings, type ApiMatch } from '../api'
+import { getCompetitionForLeague, getLeagueLeaders, getLeagues, getMatches, getStandings, type ApiLeagueLeaders, type ApiMatch } from '../api'
 import LeagueTable from '../components/LeagueTable'
 import LeagueLeaders from '../components/LeagueLeaders'
 import MatchCentreDrawer from '../components/MatchCentreDrawer'
 import type { Match } from '../components/LiveMatchCard'
 import { competitionDirectory, type StandingRow } from '../data/competitions'
-import { getMockLeagueLeaders, type LeagueLeadersResponse } from '../data/mockLeagueLeaders'
-import { getMockClubBySlug } from '../data/mockSearch'
 
 type DetailTab = 'standings' | 'fixtures' | 'results' | 'leaders'
 
@@ -80,14 +78,19 @@ function normalizeTeamSlug(name: string) {
 export default function CompetitionDetail() {
   const { slug } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
+  const selectedTeamFilter = searchParams.get('teamId') || searchParams.get('team')
+  const selectedTeamId = selectedTeamFilter && /^\d+$/.test(selectedTeamFilter)
+    ? Number(selectedTeamFilter)
+    : null
   const selectedTeamSlug = searchParams.get('team')
-  const selectedClub = selectedTeamSlug ? getMockClubBySlug(selectedTeamSlug) : undefined
   const competition = competitionDirectory.find((item) => item.slug === slug)
   const competitionSlug = competition?.slug
-  const [activeTab, setActiveTab] = useState<DetailTab>(() => selectedTeamSlug ? 'fixtures' : 'standings')
+  const [activeTab, setActiveTab] = useState<DetailTab>(() => selectedTeamFilter ? 'fixtures' : 'standings')
   const [matches, setMatches] = useState<ApiMatch[]>([])
   const [standings, setStandings] = useState<StandingRow[]>([])
-  const [leaders, setLeaders] = useState<LeagueLeadersResponse | null>(null)
+  const [leaders, setLeaders] = useState<ApiLeagueLeaders | null>(null)
+  const [leadersLoading, setLeadersLoading] = useState(false)
+  const [leadersError, setLeadersError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [standingsError, setStandingsError] = useState<string | null>(null)
@@ -95,8 +98,8 @@ export default function CompetitionDetail() {
   const [selectedMatch, setSelectedMatch] = useState<Match | null>(null)
 
   useEffect(() => {
-    if (selectedTeamSlug) setActiveTab('fixtures')
-  }, [selectedTeamSlug])
+    if (selectedTeamFilter) setActiveTab('fixtures')
+  }, [selectedTeamFilter])
 
   useEffect(() => {
     if (!competitionSlug) return
@@ -105,6 +108,8 @@ export default function CompetitionDetail() {
     setLoading(true)
     setLoadError(null)
     setStandingsError(null)
+    setLeadersError(null)
+    setLeadersLoading(true)
     setStandings([])
     setLeaders(null)
     setMatches([])
@@ -125,22 +130,39 @@ export default function CompetitionDetail() {
         if (!league || !competitionSlug) {
           setLeagueFound(false)
           setStandingsError('This competition is not currently available from the backend API.')
+          setLeadersLoading(false)
           return
         }
 
-        setLeaders(getMockLeagueLeaders(league.id, competitionSlug))
+        const [standingsResult, leadersResult] = await Promise.allSettled([
+          getStandings(league.id, controller.signal),
+          getLeagueLeaders(league.id, controller.signal),
+        ])
+        if (controller.signal.aborted) return
 
-        try {
-          setStandings(await getStandings(league.id, controller.signal))
-        } catch (error) {
-          if (error instanceof DOMException && error.name === 'AbortError') return
-          setStandingsError(error instanceof Error ? error.message : 'Unable to load standings')
+        if (standingsResult.status === 'fulfilled') {
+          setStandings(standingsResult.value)
+        } else {
+          setStandingsError(standingsResult.reason instanceof Error
+            ? standingsResult.reason.message
+            : 'Unable to load standings')
+        }
+
+        if (leadersResult.status === 'fulfilled') {
+          setLeaders(leadersResult.value)
+        } else {
+          setLeadersError(leadersResult.reason instanceof Error
+            ? leadersResult.reason.message
+            : 'Unable to load league leaders')
         }
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return
         setLoadError(error instanceof Error ? error.message : 'Unable to load competition data')
       } finally {
-        if (!controller.signal.aborted) setLoading(false)
+        if (!controller.signal.aborted) {
+          setLoading(false)
+          setLeadersLoading(false)
+        }
       }
     }
 
@@ -168,11 +190,27 @@ export default function CompetitionDetail() {
 
   const schedule = activeTab === 'results' ? results : upcoming
   const scheduleTitle = activeTab === 'fixtures' ? 'Upcoming fixtures' : 'Recent results'
-  const filteredSchedule = selectedClub
-    ? schedule.filter((match) => (
-      normalizeTeamSlug(match.homeTeam.name) === selectedClub.slug
-      || normalizeTeamSlug(match.awayTeam.name) === selectedClub.slug
-    ))
+  const selectedTeamMatch = (match: ApiMatch) => selectedTeamId
+    ? match.homeTeam.id === selectedTeamId || match.awayTeam.id === selectedTeamId
+    : selectedTeamSlug
+      ? normalizeTeamSlug(match.homeTeam.name) === selectedTeamSlug
+        || normalizeTeamSlug(match.awayTeam.name) === selectedTeamSlug
+      : false
+  const selectedTeamMatchRecord = selectedTeamFilter ? matches.find(selectedTeamMatch) : undefined
+  const selectedTeamName = selectedTeamMatchRecord
+    ? selectedTeamId
+      ? selectedTeamMatchRecord.homeTeam.id === selectedTeamId
+        ? selectedTeamMatchRecord.homeTeam.name
+        : selectedTeamMatchRecord.awayTeam.name
+      : normalizeTeamSlug(selectedTeamMatchRecord.homeTeam.name) === selectedTeamSlug
+        ? selectedTeamMatchRecord.homeTeam.name
+        : selectedTeamMatchRecord.awayTeam.name
+    : undefined
+  const selectedTeam = selectedTeamFilter
+    ? { name: selectedTeamName || selectedTeamFilter }
+    : undefined
+  const filteredSchedule = selectedTeam
+    ? schedule.filter(selectedTeamMatch)
     : schedule
 
   return (
@@ -219,18 +257,19 @@ export default function CompetitionDetail() {
             <p role="alert" className="border border-rose-400/30 bg-rose-400/5 px-4 py-3 text-xs text-rose-200">
               Could not load competition data: {loadError}
             </p>
-          ) : loading ? (
-            <p className="border border-emerald-400/15 px-4 py-8 text-center text-xs text-gray-400">Loading competition data…</p>
           ) : activeTab === 'leaders' && !leagueFound ? (
             <p role="status" className="border border-emerald-400/15 bg-[#08281f]/70 px-5 py-10 text-center text-xs text-gray-400">
               {standingsError || 'This competition is not currently available from the backend API.'}
             </p>
-          ) : activeTab === 'leaders' && leaders ? (
-            <LeagueLeaders scorers={leaders.topScorers} assists={leaders.topAssists} />
           ) : activeTab === 'leaders' ? (
-            <p className="border border-emerald-400/15 bg-[#08281f]/70 px-5 py-10 text-center text-xs text-gray-400">
-              No leader data is available yet.
-            </p>
+            <LeagueLeaders
+              loading={leadersLoading}
+              error={leadersError}
+              scorers={leaders?.topScorers || []}
+              assists={leaders?.topAssists || []}
+            />
+          ) : loading ? (
+            <p className="border border-emerald-400/15 px-4 py-8 text-center text-xs text-gray-400">Loading competition data…</p>
           ) : activeTab === 'standings' && standingsError ? (
             <p role={leagueFound ? 'alert' : 'status'} className="border border-emerald-400/15 bg-[#08281f]/70 px-5 py-10 text-center text-xs text-gray-400">
               {standingsError}
@@ -251,15 +290,16 @@ export default function CompetitionDetail() {
             </div>
           ) : (
             <section aria-label={scheduleTitle}>
-              {selectedClub && (
+              {selectedTeam && (
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border border-emerald-400/15 bg-[#08281f]/70 px-3 py-2.5 text-[10px]">
-                  <span className="text-gray-300">Showing {scheduleTitle.toLowerCase()} for <strong className="text-amber-200">{selectedClub.name}</strong></span>
+                  <span className="text-gray-300">Showing {scheduleTitle.toLowerCase()} for <strong className="text-amber-200">{selectedTeam.name}</strong></span>
                   <button
                     type="button"
                     className="cursor-pointer text-emerald-300 underline decoration-emerald-300/30 underline-offset-2 hover:text-white"
                     onClick={() => setSearchParams((current) => {
                       const next = new URLSearchParams(current)
                       next.delete('team')
+                      next.delete('teamId')
                       return next
                     }, { replace: true })}
                   >
@@ -311,12 +351,12 @@ export default function CompetitionDetail() {
                 <div className="border border-emerald-400/15 bg-[#08281f]/70 px-5 py-10 text-center">
                   <CalendarDays size={22} className="mx-auto text-amber-300" />
                   <h2 className="mt-3 text-sm font-medium text-white">
-                    {selectedClub
-                      ? `No ${activeTab === 'results' ? 'recent results' : 'upcoming fixtures'} for ${selectedClub.name}`
+                    {selectedTeam
+                      ? `No ${activeTab === 'results' ? 'recent results' : 'upcoming fixtures'} for ${selectedTeam.name}`
                       : activeTab === 'results' ? 'No recent results available' : 'No upcoming fixtures available'}
                   </h2>
                   <p className="mx-auto mt-2 max-w-md text-xs leading-5 text-gray-400">
-                    {selectedClub
+                    {selectedTeam
                       ? 'There are no matching matches in the current data window.'
                       : `The backend has no ${activeTab === 'results' ? 'finished matches' : 'scheduled matches'} for this league yet.`}
                   </p>

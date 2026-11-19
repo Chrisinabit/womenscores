@@ -1,5 +1,23 @@
 import { Goal, Sparkles } from 'lucide-react'
-import type { LeagueLeader } from '../data/mockLeagueLeaders'
+import type { ApiLeagueLeader } from '../api'
+
+function LeaderSkeleton() {
+  return (
+    <section className="overflow-hidden rounded-xl border border-emerald-300/15 bg-[#064e3b]/35 p-5" aria-hidden="true">
+      <div className="mb-5 h-5 w-32 animate-pulse rounded bg-emerald-100/10" />
+      {Array.from({ length: 5 }, (_, index) => (
+        <div key={index} className="flex items-center gap-3 border-t border-emerald-100/[.07] py-3">
+          <div className="size-6 animate-pulse rounded bg-emerald-100/10" />
+          <div className="flex-1 space-y-2">
+            <div className="h-3 w-2/3 animate-pulse rounded bg-emerald-100/10" />
+            <div className="h-2 w-1/3 animate-pulse rounded bg-emerald-100/[.06]" />
+          </div>
+          <div className="h-4 w-7 animate-pulse rounded bg-emerald-100/10" />
+        </div>
+      ))}
+    </section>
+  )
+}
 
 function LeaderCard({
   title,
@@ -9,7 +27,7 @@ function LeaderCard({
 }: {
   title: string
   statLabel: string
-  players: LeagueLeader[]
+  players: ApiLeagueLeader[]
   statKey: 'goals' | 'assists'
 }) {
   return (
@@ -43,9 +61,9 @@ function LeaderCard({
                   <span className="grid size-4 shrink-0 place-items-center overflow-hidden rounded-full border border-emerald-100/10 bg-emerald-950/70 text-[6px] font-bold text-amber-200">
                     {player.teamCrestUrl
                       ? <img src={player.teamCrestUrl} alt="" className="size-full object-contain" />
-                      : player.teamShortName.slice(0, 3)}
+                      : (player.teamShortName || player.teamName?.slice(0, 3) || '—')}
                   </span>
-                  <span className="truncate text-[9px] text-emerald-50/50">{player.teamName}</span>
+                  <span className="truncate text-[9px] text-emerald-50/50">{player.teamName || 'Club unavailable'}</span>
                 </div>
               </div>
               <span className="text-center text-[10px] tabular-nums text-emerald-50/60">{player.appearances}</span>
@@ -63,14 +81,35 @@ function LeaderCard({
 export default function LeagueLeaders({
   scorers,
   assists,
+  loading,
+  error,
 }: {
-  scorers: LeagueLeader[]
-  assists: LeagueLeader[]
+  scorers: ApiLeagueLeader[]
+  assists: ApiLeagueLeader[]
+  loading: boolean
+  error: string | null
 }) {
+  if (loading) {
+    return (
+      <div className="grid gap-4 lg:grid-cols-2" aria-label="Loading league leaders" aria-busy="true">
+        <LeaderSkeleton />
+        <LeaderSkeleton />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <p role="alert" className="border border-rose-400/30 bg-rose-400/5 px-4 py-4 text-xs text-rose-200">
+        Could not load league leaders: {error}
+      </p>
+    )
+  }
+
   return (
     <div>
       <div className="mb-4 flex items-center justify-between gap-3">
-        <p className="text-[10px] text-emerald-50/45">Player rankings · sample data</p>
+        <p className="text-[10px] text-emerald-50/45">Player rankings · live data</p>
         <span className="inline-flex items-center gap-1.5 text-[9px] text-amber-200/65">
           <Sparkles size={12} />Season leaders
         </span>

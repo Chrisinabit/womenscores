@@ -1,7 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Search, UserRound, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { searchMockData, type MockClubSearchResult, type MockPlayerSearchResult } from '../data/mockSearch'
+import { getCompetitionForLeague, getLeagues, searchApi, type ApiLeague, type ApiSearchClub, type ApiSearchPlayer, type ApiSearchResults } from '../api'
+import { competitionDirectory } from '../data/competitions'
+
+function normalize(value: string) {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
 
 export default function HeaderQuickSearch() {
   const navigate = useNavigate()
@@ -9,13 +19,55 @@ export default function HeaderQuickSearch() {
   const inputRef = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [results, setResults] = useState<ApiSearchResults>({ clubs: [], players: [] })
+  const [leagues, setLeagues] = useState<ApiLeague[]>([])
+  const [loading, setLoading] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
   const [isOpen, setIsOpen] = useState(false)
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    getLeagues(controller.signal)
+      .then(setLeagues)
+      .catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) {
+          setLeagues([])
+        }
+      })
+    return () => controller.abort()
+  }, [])
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => setDebouncedQuery(query.trim()), 300)
     return () => window.clearTimeout(timeoutId)
   }, [query])
+
+  useEffect(() => {
+    const searchTerm = debouncedQuery.trim()
+    if (!searchTerm) {
+      setResults({ clubs: [], players: [] })
+      setLoading(false)
+      setSearchError(null)
+      return
+    }
+
+    const controller = new AbortController()
+    setLoading(true)
+    setSearchError(null)
+    searchApi(searchTerm, controller.signal)
+      .then(setResults)
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return
+        setResults({ clubs: [], players: [] })
+        setSearchError(error instanceof Error ? error.message : 'Unable to search clubs and players')
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false)
+      })
+
+    return () => controller.abort()
+  }, [debouncedQuery])
 
   useEffect(() => {
     if (mobileSearchOpen) inputRef.current?.focus()
@@ -33,16 +85,42 @@ export default function HeaderQuickSearch() {
     return () => document.removeEventListener('pointerdown', closeOnOutsideClick)
   }, [])
 
-  const results = useMemo(() => searchMockData(debouncedQuery), [debouncedQuery])
-  const isSearching = query.trim() !== debouncedQuery
+  const isSearching = query.trim() !== debouncedQuery || loading
 
-  function openClub(club: Pick<MockClubSearchResult, 'slug' | 'competitionSlug'>) {
-    navigate(`/competitions/${club.competitionSlug}?team=${encodeURIComponent(club.slug)}`)
+  function competitionSlugFor(competitionId: number | null, name: string | null, country = '') {
+    const league = leagues.find((item) => item.id === competitionId)
+      || (name
+        ? { id: competitionId || 0, name, country, logoUrl: null }
+        : undefined)
+    const competition = league
+      ? getCompetitionForLeague(league, competitionDirectory)
+      : undefined
+    return competition?.slug
+      || competitionDirectory.find((item) => normalize(item.name) === normalize(name || ''))?.slug
+  }
+
+  function openClub(club: ApiSearchClub) {
+    const competitionSlug = competitionSlugFor(club.competitionId, club.competitionName, club.country)
+    if (!competitionSlug) {
+      navigate('/competitions')
+    } else {
+      navigate(`/competitions/${competitionSlug}?teamId=${club.id}`)
+    }
     closeSearch()
   }
 
-  function openPlayer(player: Pick<MockPlayerSearchResult, 'clubSlug' | 'competitionSlug'>) {
-    navigate(`/competitions/${player.competitionSlug}?team=${encodeURIComponent(player.clubSlug)}`)
+  function openPlayer(player: ApiSearchPlayer) {
+    const competitionSlug = competitionSlugFor(
+      player.competitionId,
+      player.competitionName,
+      leagues.find((league) => league.id === player.competitionId)?.country || '',
+    )
+    if (!competitionSlug) {
+      navigate('/competitions')
+    } else {
+      const teamQuery = player.teamId ? `?teamId=${player.teamId}` : ''
+      navigate(`/competitions/${competitionSlug}${teamQuery}`)
+    }
     closeSearch()
   }
 
@@ -51,6 +129,7 @@ export default function HeaderQuickSearch() {
     setMobileSearchOpen(false)
     setQuery('')
     setDebouncedQuery('')
+    setSearchError(null)
   }
 
   return (
@@ -105,7 +184,19 @@ export default function HeaderQuickSearch() {
             className="absolute left-0 right-0 top-full z-40 mt-2 max-h-[min(70vh,28rem)] overflow-y-auto rounded-lg border border-emerald-100/10 bg-[#06291f] p-2 shadow-2xl shadow-black/40"
           >
             {isSearching ? (
-              <p className="px-3 py-4 text-center text-xs text-emerald-50/45">Searching…</p>
+              <div role="status" aria-label="Searching clubs and players" className="space-y-2 p-2">
+                {[0, 1, 2].map((item) => (
+                  <div key={item} className="flex items-center gap-3 rounded-md px-2 py-2">
+                    <span className="size-8 animate-pulse rounded-full bg-emerald-100/10" />
+                    <span className="flex-1 space-y-2">
+                      <span className="block h-3 w-2/3 animate-pulse rounded bg-emerald-100/10" />
+                      <span className="block h-2 w-1/3 animate-pulse rounded bg-emerald-100/[.06]" />
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : searchError ? (
+              <p role="alert" className="px-3 py-4 text-center text-xs text-rose-200">Search failed: {searchError}</p>
             ) : results.clubs.length === 0 && results.players.length === 0 ? (
               <p className="px-3 py-4 text-center text-xs text-emerald-50/45">No clubs or players found.</p>
             ) : (
@@ -125,7 +216,7 @@ export default function HeaderQuickSearch() {
                         <span className="grid size-8 shrink-0 place-items-center overflow-hidden rounded-full border border-emerald-100/10 bg-emerald-950 text-[9px] font-bold text-amber-200">
                           {club.crestUrl
                             ? <img src={club.crestUrl} alt="" className="size-full object-contain" />
-                            : club.shortName}
+                            : club.shortName || club.name.slice(0, 3).toUpperCase()}
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-xs font-medium text-white">{club.name}</span>
@@ -152,9 +243,9 @@ export default function HeaderQuickSearch() {
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-xs font-medium text-white">{player.name}</span>
-                          <span className="mt-0.5 block truncate text-[9px] text-emerald-100/40">{player.position} · {player.clubName}</span>
+                          <span className="mt-0.5 block truncate text-[9px] text-emerald-100/40">{player.position || 'Position unavailable'} · {player.teamName || 'Club unavailable'}</span>
                         </span>
-                        <span className="text-[8px] uppercase tracking-wide text-amber-200/60">Club fixtures</span>
+                        <span className="text-[8px] uppercase tracking-wide text-amber-200/60">{player.teamId ? 'Club fixtures' : 'Competition'}</span>
                       </button>
                     ))}
                   </section>

@@ -21,7 +21,7 @@ function positiveId(value) {
   return Number.isSafeInteger(id) && id > 0 ? id : null
 }
 
-app.post('/api/sync', async (request, response, next) => {
+app.post(['/api/sync', '/api/sync/enrich'], async (request, response, next) => {
   if (process.env.NODE_ENV === 'production') {
     const expectedToken = process.env.SYNC_API_SECRET
     const authorization = request.get('authorization') || ''
@@ -52,7 +52,11 @@ app.post('/api/sync', async (request, response, next) => {
   }
 
   try {
-    response.json({ message: 'Football data sync completed', ...(await syncAllFootballData()) })
+    const result = await syncAllFootballData()
+    const message = request.path.endsWith('/enrich')
+      ? 'Football enrichment sync completed'
+      : 'Football data sync completed'
+    response.json({ message, ...result })
   } catch (error) {
     next(error)
   }
@@ -175,7 +179,17 @@ app.get('/api/matches/:id', async (request, response, next) => {
             e.id::int AS id,
             e.minute,
             e.added_time AS "addedTime",
-            e.event_type AS type,
+            CASE e.event_type
+              WHEN '14' THEN 'goal'
+              WHEN '15' THEN 'own_goal'
+              WHEN '16' THEN 'penalty'
+              WHEN '17' THEN 'missed_penalty'
+              WHEN '18' THEN 'substitution'
+              WHEN '19' THEN 'yellow_card'
+              WHEN '20' THEN 'red_card'
+              WHEN '21' THEN 'yellow_red_card'
+              ELSE e.event_type
+            END AS type,
             CASE
               WHEN e.team_id = m.home_team_id THEN 'home'
               WHEN e.team_id = m.away_team_id THEN 'away'
@@ -529,6 +543,14 @@ app.listen(port, () => {
   console.log(`womenscores API listening on port ${port}`)
 
   if (process.env.SPORTMONKS_API_TOKEN) {
+    syncAllFootballData()
+      .then((result) => {
+        console.log('Startup football sync completed:', result)
+      })
+      .catch((error) => {
+        console.error('Startup football sync failed:', error)
+      })
+
     cron.schedule('*/5 * * * *', async () => {
       if (isSyncInProgress()) {
         console.log('Skipping live fixture sync because another sync is in progress')
@@ -537,13 +559,16 @@ app.listen(port, () => {
 
       try {
         const result = await syncLiveFixtures()
-        console.log(`Updated ${result.fixtures} live fixture records`)
+        console.log(
+          `Updated ${result.fixtures} enriched matches, ${result.events} events, `
+          + `and ${result.lineups} lineups`,
+        )
       } catch (error) {
         console.error('Scheduled football sync failed:', error)
       }
     })
     console.log('Live fixture sync scheduled every 5 minutes')
   } else {
-    console.warn('Live fixture sync is disabled because SPORTMONKS_API_TOKEN is not configured')
+    console.warn('Startup and scheduled football sync are disabled because SPORTMONKS_API_TOKEN is not configured')
   }
 })

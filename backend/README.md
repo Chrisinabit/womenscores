@@ -20,9 +20,10 @@ npm run dev
 
 ## Sync behavior
 
-- `POST /api/sync` discovers leagues available to your token from `GET /leagues?include=currentSeason;country`, follows cursor pagination, and whitelists the requested women's competitions. League and current-season IDs are stored in the database.
-- A full sync imports standings, top scorers/assists, and fixtures for the next 14 days and the previous 7 days. The fixtures-by-date endpoint returns a single date, so the service requests each date with a filter for the selected league IDs. Set `UPCOMING_FIXTURE_DAYS` to a value from 1 to 30 and `PAST_FIXTURE_DAYS` to a value from 0 to 30.
-- Fixture sync requests venue, referee, broadcast stations, events, lineups, and statistics. If an optional include is rejected for a token tier, the service retries with the core fixture includes and preserves previously synced enrichment where the provider omitted fields.
+- `POST /api/sync` and `POST /api/sync/enrich` discover leagues available to your token from `GET /leagues?include=currentSeason;country`, follow cursor pagination, and whitelist the requested women's competitions. League and current-season IDs are stored in the database.
+- On startup and for either manual sync endpoint, the service imports standings, top scorers/assists, and fixtures from 14 days ago through 14 days ahead. The fixtures-by-date endpoint returns a single date, so the service requests each date with a filter for the selected league IDs.
+- Fixture sync requests `participants;scores;venue;referees;events;lineups;statistics.type;tvstations.tvstation`. If the combined optional includes are rejected, the service retries each optional include independently so one restricted include does not prevent event or lineup upserts. Sync logs report the upserted enriched-match, event, lineup, and top-scorer counts.
+- Sportmonks event type IDs are normalized to readable event names. After fixture enrichment, current-season player totals are recalculated from played-match events and lineups without reducing higher provider totals.
 - The cron job requests in-play livescores every five minutes. Repeated in-play API calls are cached in memory for 20 seconds to coalesce duplicate requests. A server restart clears that cache.
 - API requests are serialized with a default one-second minimum interval. Set `SPORTMONKS_MIN_INTERVAL_MS` to match your subscription limits.
 - In development, the manual endpoint is available without a token. In production, set `SYNC_API_SECRET` and send `Authorization: Bearer <secret>`; if it is unset, the endpoint is disabled.

@@ -33,6 +33,108 @@ export type ApiMatch = {
   }
 }
 
+export type ApiMatchEvent = {
+  id: number
+  minute: number | null
+  added_time: number | null
+  type: string
+  team: 'home' | 'away' | null
+  player: string | null
+  detail: string | null
+  secondary_player: string | null
+}
+
+export type ApiMatchPlayer = {
+  id: number
+  name: string
+  number: number | null
+  position: string | null
+  rating: number | null
+}
+
+export type ApiMatchLineup = {
+  starting_xi: ApiMatchPlayer[]
+  substitutes: ApiMatchPlayer[]
+}
+
+export type ApiMatchDetail = {
+  match_id: number
+  competition: string
+  kickoff: string | null
+  status: string
+  minute: number | null
+  venue: string | null
+  referee: string | null
+  formation_home: string | null
+  formation_away: string | null
+  teams: {
+    home: { id: number; name: string; short_name: string | null; crest_url: string | null }
+    away: { id: number; name: string; short_name: string | null; crest_url: string | null }
+  }
+  score: { home: number | null; away: number | null }
+  tv_stations: { name: string; country: string | null; logo: string | null }[]
+  statistics: Partial<Record<
+    'possession' | 'total_shots' | 'shots_on_target' | 'corners',
+    { home: number | null; away: number | null }
+  >>
+  match_events: ApiMatchEvent[]
+  match_lineups: { home: ApiMatchLineup; away: ApiMatchLineup }
+  match_polls: { home_votes: number; draw_votes: number; away_votes: number }
+}
+
+export type ApiMatchVote = {
+  home_votes: number
+  draw_votes: number
+  away_votes: number
+}
+
+export type ApiLeagueLeader = {
+  rank: number
+  playerId: number
+  playerName: string
+  teamId: number | null
+  teamName: string | null
+  teamShortName: string | null
+  teamCrestUrl: string | null
+  appearances: number
+  goals: number
+  assists: number
+}
+
+export type ApiLeagueLeaders = {
+  topScorers: ApiLeagueLeader[]
+  topAssists: ApiLeagueLeader[]
+}
+
+export type ApiSearchClub = {
+  id: number
+  name: string
+  shortName: string | null
+  crestUrl: string | null
+  competitionId: number
+  competitionName: string
+  country: string
+}
+
+export type ApiSearchPlayer = {
+  id: number
+  name: string
+  commonName: string | null
+  position: string | null
+  imageUrl: string | null
+  teamId: number | null
+  teamName: string | null
+  teamShortName: string | null
+  teamCrestUrl: string | null
+  competitionId: number | null
+  competitionName: string | null
+}
+
+export type ApiSearchResults = {
+  clubs: ApiSearchClub[]
+  players: ApiSearchPlayer[]
+}
+
 type ApiStanding = {
   rank: number
   played: number
@@ -50,11 +152,14 @@ type ApiStanding = {
   teamCrestUrl: string | null
 }
 
-async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+async function requestJson<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
   let response: Response
 
   try {
-    response = await fetch(`${apiBaseUrl}${path}`, { signal })
+    response = await fetch(`${apiBaseUrl}${path}`, init)
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw error
@@ -77,12 +182,36 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   return response.json() as Promise<T>
 }
 
+async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+  return requestJson<T>(path, { signal })
+}
+
 export function getLeagues(signal?: AbortSignal) {
   return getJson<ApiLeague[]>('/api/leagues', signal)
 }
 
 export function getMatches(signal?: AbortSignal) {
   return getJson<ApiMatch[]>('/api/matches', signal)
+}
+
+export function getMatchDetail(matchId: number, signal?: AbortSignal) {
+  return getJson<ApiMatchDetail>(`/api/matches/${matchId}`, signal)
+}
+
+export function voteForMatch(matchId: number, choice: 'home' | 'draw' | 'away') {
+  return requestJson<ApiMatchVote>(`/api/matches/${matchId}/vote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ choice }),
+  })
+}
+
+export function getLeagueLeaders(leagueId: number, signal?: AbortSignal) {
+  return getJson<ApiLeagueLeaders>(`/api/leagues/${leagueId}/leaders`, signal)
+}
+
+export function searchApi(query: string, signal?: AbortSignal) {
+  return getJson<ApiSearchResults>(`/api/search?q=${encodeURIComponent(query)}`, signal)
 }
 
 export async function getStandings(leagueId: number, signal?: AbortSignal): Promise<StandingRow[]> {

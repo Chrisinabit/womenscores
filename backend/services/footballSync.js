@@ -12,18 +12,17 @@ const fixtureRequiredIncludes = ['participants', 'scores', 'state', 'league', 'p
 const fixtureOptionalIncludes = [
   'venue',
   'referees',
-  'tvstations.tvstation',
   'events',
   'lineups',
-  'statistics',
+  'statistics.type',
+  'tvstations.tvstation',
 ]
 const standingsIncludes = 'participant;details'
-const topScorerRequiredIncludes = ['player', 'participant']
+const topScorerRequiredIncludes = ['player', 'team']
 const topScorerOptionalIncludes = ['type']
 const liveCacheTtlMs = 20_000
 const requestIntervalMs = Number(process.env.SPORTMONKS_MIN_INTERVAL_MS || 1000)
-const upcomingFixtureDays = Number(process.env.UPCOMING_FIXTURE_DAYS || 14)
-const pastFixtureDays = Number(process.env.PAST_FIXTURE_DAYS || 7)
+const fixtureBackfillDays = 14
 // Sportmonks uses numeric periods ("1st", "2nd") for in-play fixtures; the
 // short codes are kept as well in case the API ever switches between the two.
 const activeStates = new Set([
@@ -49,6 +48,16 @@ const standingDetailIds = {
   goalsAgainst: 134,
   goalDifference: 179,
 }
+const eventTypesById = {
+  14: 'goal',
+  15: 'own_goal',
+  16: 'penalty',
+  17: 'missed_penalty',
+  18: 'substitution',
+  19: 'yellow_card',
+  20: 'red_card',
+  21: 'yellow_red_card',
+}
 
 let lastRequestAt = 0
 let requestQueue = Promise.resolve()
@@ -59,14 +68,6 @@ let liveCacheRequest = null
 
 if (!Number.isInteger(requestIntervalMs) || requestIntervalMs < 0) {
   throw new Error('SPORTMONKS_MIN_INTERVAL_MS must be a non-negative integer')
-}
-
-if (!Number.isInteger(upcomingFixtureDays) || upcomingFixtureDays < 1 || upcomingFixtureDays > 30) {
-  throw new Error('UPCOMING_FIXTURE_DAYS must be an integer between 1 and 30')
-}
-
-if (!Number.isInteger(pastFixtureDays) || pastFixtureDays < 0 || pastFixtureDays > 30) {
-  throw new Error('PAST_FIXTURE_DAYS must be an integer between 0 and 30')
 }
 
 function requireApiToken() {
@@ -179,12 +180,41 @@ async function getAllDataWithOptionalIncludes(
   } catch (error) {
     if (!isRestrictedIncludeError(error)) throw error
 
-    console.warn(`Retrying Sportmonks ${endpoint} with required includes only`)
-    return getAllData(endpoint, {
+    console.warn(`Sportmonks ${endpoint} rejected combined includes; retrying optional includes individually`)
+    const fixtures = await getAllData(endpoint, {
       ...params,
       include: requiredIncludes.join(';'),
     })
+    const fixturesById = new Map()
+    for (const fixture of fixtures) {
+      const key = recordKey(fixture)
+      if (key !== null) fixturesById.set(key, fixture)
+    }
+
+    for (const optionalInclude of optionalIncludes) {
+      try {
+        const enrichedFixtures = await getAllData(endpoint, {
+          ...params,
+          include: [...requiredIncludes, optionalInclude].join(';'),
+        })
+        for (const enrichedFixture of enrichedFixtures) {
+          const key = recordKey(enrichedFixture)
+          const fixture = key === null ? null : fixturesById.get(key)
+          if (fixture) Object.assign(fixture, enrichedFixture)
+        }
+      } catch (includeError) {
+        if (!isRestrictedIncludeError(includeError)) throw includeError
+        console.warn(`Sportmonks ${endpoint} does not allow optional include "${optionalInclude}"`)
+      }
+    }
+
+    return fixtures
   }
+}
+
+function recordKey(record) {
+  const id = record.id ?? record.fixture_id ?? record.player_id
+  return id === undefined || id === null ? null : String(id)
 }
 
 function normalizeText(value) {
@@ -420,12 +450,22 @@ function topScorerStatField(row) {
 }
 
 export async function syncTopScorers(seasonId, leagueId) {
-  const rows = await getAllDataWithOptionalIncludes(
-    `/topscorers/seasons/${seasonId}`,
-    { per_page: 50 },
-    topScorerRequiredIncludes,
-    topScorerOptionalIncludes,
-  )
+  let rows
+  try {
+    rows = await getAllDataWithOptionalIncludes(
+      `/topscorers/seasons/${seasonId}`,
+      { per_page: 50 },
+      topScorerRequiredIncludes,
+      topScorerOptionalIncludes,
+    )
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/HTTP 404|no results? found|no result\(s\) found/i.test(message)) {
+      console.warn(`[syncTopScorers] No topscorer data available for season ${seasonId}`)
+      return 0
+    }
+    throw error
+  }
   const statsByPlayer = new Map()
 
   for (const row of rows) {
@@ -437,7 +477,7 @@ export async function syncTopScorers(seasonId, leagueId) {
     )
     if (!playerId) continue
 
-    const participant = relationValue(row.participant)
+    const participant = relationValue(row.team) || relationValue(row.participant)
     let teamId = null
     if (participant?.id && participant?.name) {
       teamId = await upsertTeam(participant, leagueId)
@@ -807,9 +847,9 @@ function lineupType(lineup) {
   const type = relationValue(lineup.type)
   const name = normalizeText(type?.name || stringValue(lineup.type) || lineup.type_name || '')
   const typeId = integerValue(lineup.type_id ?? type?.id)
-  return name.includes('sub') || name.includes('bench') || typeId === 12
-    ? 'substitute'
-    : 'starting_xi'
+  if (name.includes('sub') || name.includes('bench') || typeId === 12) return 'substitute'
+  if (typeId === 11) return 'starting_xi'
+  return integerValue(lineup.formation_position) === null ? 'substitute' : 'starting_xi'
 }
 
 function lineupPosition(lineup) {
@@ -821,6 +861,9 @@ function lineupPosition(lineup) {
 
 function eventType(event) {
   const type = relationValue(event.type)
+  const typeId = integerValue(event.type_id ?? type?.id ?? event.type)
+  if (typeId && eventTypesById[typeId]) return eventTypesById[typeId]
+
   const name = normalizeText(type?.name || event.type_name || event.type || '')
 
   if (name.includes('goal')) return 'goal'
@@ -841,6 +884,7 @@ function eventTeamId(event, participants, localTeamIds) {
 
 async function persistFixtureEvents(fixture, matchId, participants, localTeamIds) {
   const events = relationArray(fixture.events)
+  let upserted = 0
 
   for (const event of events) {
     const eventId = integerValue(event.id)
@@ -894,11 +938,15 @@ async function persistFixtureEvents(fixture, matchId, participants, localTeamIds
         stringValue(event.result),
       ],
     )
+    upserted += 1
   }
+
+  return upserted
 }
 
 async function persistFixtureLineups(fixture, matchId, participants, localTeamIds) {
   const lineups = relationArray(fixture.lineups)
+  let upserted = 0
 
   for (const lineup of lineups) {
     const lineupId = integerValue(lineup.id)
@@ -948,7 +996,10 @@ async function persistFixtureLineups(fixture, matchId, participants, localTeamId
         rating,
       ],
     )
+    upserted += 1
   }
+
+  return upserted
 }
 
 export function normalizeFixture(fixture) {
@@ -997,102 +1048,270 @@ export function normalizeFixture(fixture) {
   }
 }
 
-async function persistFixtures(fixtures, trackedLeagues) {
-  const matchTimeDataType = await getMatchTimeDataType()
-  let saved = 0
+async function persistFixture(fixture, trackedLeagues, matchTimeDataType) {
+  const leagueData = relationValue(fixture.league)
+  const league = trackedLeagues.get(Number(fixture.league_id || leagueData?.id))
+  if (!league) return { fixtures: 0, events: 0, lineups: 0 }
 
-  for (const fixture of fixtures) {
-    const leagueData = relationValue(fixture.league)
-    const league = trackedLeagues.get(Number(fixture.league_id || leagueData?.id))
-    if (!league) continue
-
-    const participants = getParticipants(fixture)
-    if (!participants.home || !participants.away) {
-      console.warn(`Skipping Sportmonks fixture ${fixture.id}: home or away participant is missing`)
-      continue
-    }
-
-    const homeTeamId = await upsertTeam(participants.home, league.id)
-    const awayTeamId = await upsertTeam(participants.away, league.id)
-    const status = normalizedStatus(relationValue(fixture.state)?.short_name)
-    const kickoffAt = kickoffDateTime(fixture)
-    const matchTime = formatMatchTime(kickoffAt, matchTimeDataType)
-    const scores = getCurrentScores(fixture)
-    const minute = fixtureMinute(fixture)
-    const stations = tvStations(fixture)
-    const statistics = normalizeStatistics(
-      fixture,
-      participants.home.id,
-      participants.away.id,
-    )
-    const { rows } = await pool.query(
-      `
-        INSERT INTO matches (
-          sportmonks_id, league_id, home_team_id, away_team_id,
-          status, minute, home_score, away_score, match_time, kickoff_at,
-          venue_name, referee_name, tv_stations, statistics,
-          formation_home, formation_away
-        )
-        VALUES (
-          $1, $2, $3, $4, COALESCE($5, 'scheduled'), $6, $7, $8, $9, $10,
-          $11, $12, COALESCE($13::jsonb, '[]'::jsonb),
-          COALESCE($14::jsonb, '{}'::jsonb), $15, $16
-        )
-        ON CONFLICT (sportmonks_id) DO UPDATE
-        SET league_id = EXCLUDED.league_id,
-            home_team_id = EXCLUDED.home_team_id,
-            away_team_id = EXCLUDED.away_team_id,
-            status = COALESCE($5, matches.status),
-            minute = CASE
-              WHEN $5 IS NULL THEN COALESCE($6, matches.minute)
-              ELSE $6
-            END,
-            home_score = EXCLUDED.home_score,
-            away_score = EXCLUDED.away_score,
-            match_time = EXCLUDED.match_time,
-            kickoff_at = EXCLUDED.kickoff_at,
-            venue_name = COALESCE(EXCLUDED.venue_name, matches.venue_name),
-            referee_name = COALESCE(EXCLUDED.referee_name, matches.referee_name),
-            tv_stations = CASE
-              WHEN $13 IS NULL THEN matches.tv_stations
-              ELSE EXCLUDED.tv_stations
-            END,
-            statistics = CASE
-              WHEN $14 IS NULL THEN matches.statistics
-              ELSE EXCLUDED.statistics
-            END,
-            formation_home = COALESCE(EXCLUDED.formation_home, matches.formation_home),
-            formation_away = COALESCE(EXCLUDED.formation_away, matches.formation_away)
-        RETURNING id
-      `,
-      [
-        fixture.id,
-        league.id,
-        homeTeamId,
-        awayTeamId,
-        status,
-        status === null || status === 'live' ? minute : null,
-        scores.home ?? null,
-        scores.away ?? null,
-        matchTime,
-        kickoffAt,
-        venueName(fixture),
-        refereeName(fixture),
-        stations === null ? null : JSON.stringify(stations),
-        statistics === null ? null : JSON.stringify(statistics),
-        formationFor(fixture, 'home', participants.home.id),
-        formationFor(fixture, 'away', participants.away.id),
-      ],
-    )
-
-    const matchId = Number(rows[0].id)
-    const localTeamIds = { home: homeTeamId, away: awayTeamId }
-    await persistFixtureEvents(fixture, matchId, participants, localTeamIds)
-    await persistFixtureLineups(fixture, matchId, participants, localTeamIds)
-    saved += 1
+  const participants = getParticipants(fixture)
+  if (!participants.home || !participants.away) {
+    console.warn(`Skipping Sportmonks fixture ${fixture.id}: home or away participant is missing`)
+    return { fixtures: 0, events: 0, lineups: 0 }
   }
 
-  return saved
+  const homeTeamId = await upsertTeam(participants.home, league.id)
+  const awayTeamId = await upsertTeam(participants.away, league.id)
+  const status = normalizedStatus(relationValue(fixture.state)?.short_name)
+  const kickoffAt = kickoffDateTime(fixture)
+  const matchTime = formatMatchTime(kickoffAt, matchTimeDataType)
+  const scores = getCurrentScores(fixture)
+  const minute = fixtureMinute(fixture)
+  const stations = tvStations(fixture)
+  const statistics = normalizeStatistics(
+    fixture,
+    participants.home.id,
+    participants.away.id,
+  )
+  const { rows } = await pool.query(
+    `
+      INSERT INTO matches (
+        sportmonks_id, league_id, home_team_id, away_team_id,
+        status, minute, home_score, away_score, match_time, kickoff_at,
+        venue_name, referee_name, tv_stations, statistics,
+        formation_home, formation_away
+      )
+      VALUES (
+        $1, $2, $3, $4, COALESCE($5, 'scheduled'), $6, $7, $8, $9, $10,
+        $11, $12, COALESCE($13::jsonb, '[]'::jsonb),
+        COALESCE($14::jsonb, '{}'::jsonb), $15, $16
+      )
+      ON CONFLICT (sportmonks_id) DO UPDATE
+      SET league_id = EXCLUDED.league_id,
+          home_team_id = EXCLUDED.home_team_id,
+          away_team_id = EXCLUDED.away_team_id,
+          status = COALESCE($5, matches.status),
+          minute = CASE
+            WHEN $5 IS NULL THEN COALESCE($6, matches.minute)
+            ELSE $6
+          END,
+          home_score = EXCLUDED.home_score,
+          away_score = EXCLUDED.away_score,
+          match_time = EXCLUDED.match_time,
+          kickoff_at = EXCLUDED.kickoff_at,
+          venue_name = COALESCE(EXCLUDED.venue_name, matches.venue_name),
+          referee_name = COALESCE(EXCLUDED.referee_name, matches.referee_name),
+          tv_stations = CASE
+            WHEN $13 IS NULL THEN matches.tv_stations
+            ELSE EXCLUDED.tv_stations
+          END,
+          statistics = CASE
+            WHEN $14 IS NULL THEN matches.statistics
+            ELSE EXCLUDED.statistics
+          END,
+          formation_home = COALESCE(EXCLUDED.formation_home, matches.formation_home),
+          formation_away = COALESCE(EXCLUDED.formation_away, matches.formation_away)
+      RETURNING id
+    `,
+    [
+      fixture.id,
+      league.id,
+      homeTeamId,
+      awayTeamId,
+      status,
+      status === null || status === 'live' ? minute : null,
+      scores.home ?? null,
+      scores.away ?? null,
+      matchTime,
+      kickoffAt,
+      venueName(fixture),
+      refereeName(fixture),
+      stations === null ? null : JSON.stringify(stations),
+      statistics === null ? null : JSON.stringify(statistics),
+      formationFor(fixture, 'home', participants.home.id),
+      formationFor(fixture, 'away', participants.away.id),
+    ],
+  )
+
+  const matchId = Number(rows[0].id)
+  const localTeamIds = { home: homeTeamId, away: awayTeamId }
+  const events = await persistFixtureEvents(fixture, matchId, participants, localTeamIds)
+  const lineups = await persistFixtureLineups(fixture, matchId, participants, localTeamIds)
+  return { fixtures: 1, events, lineups }
+}
+
+async function persistFixtures(fixtures, trackedLeagues) {
+  const matchTimeDataType = await getMatchTimeDataType()
+  const counts = { fixtures: 0, events: 0, lineups: 0 }
+
+  for (const fixture of fixtures) {
+    try {
+      const fixtureCounts = await persistFixture(fixture, trackedLeagues, matchTimeDataType)
+      counts.fixtures += fixtureCounts.fixtures
+      counts.events += fixtureCounts.events
+      counts.lineups += fixtureCounts.lineups
+    } catch (error) {
+      console.error(`Could not sync Sportmonks fixture ${fixture.id}:`, error)
+    }
+  }
+
+  return counts
+}
+
+async function recalculatePlayerSeasonStats() {
+  const { rowCount } = await pool.query(`
+    WITH player_match_rows AS (
+      SELECT player_id, match_id, team_id
+      FROM match_lineups
+      WHERE lineup_type = 'starting_xi'
+      UNION
+      SELECT player_id, match_id, team_id
+      FROM match_events
+      WHERE player_id IS NOT NULL
+      UNION
+      SELECT secondary_player_id AS player_id, match_id, team_id
+      FROM match_events
+      WHERE secondary_player_id IS NOT NULL
+    ),
+    player_matches AS (
+      SELECT DISTINCT
+        pm.player_id,
+        pm.match_id,
+        pm.team_id,
+        m.league_id,
+        l.sportmonks_season_id AS season_id,
+        m.kickoff_at
+      FROM player_match_rows pm
+      JOIN matches m ON m.id = pm.match_id
+      JOIN leagues l ON l.id = m.league_id
+      WHERE m.sportmonks_id IS NOT NULL
+        AND LOWER(m.status) IN ('live', 'finished')
+        AND l.sportmonks_season_id IS NOT NULL
+    ),
+    appearance_stats AS (
+      SELECT
+        player_id,
+        season_id,
+        league_id,
+        COUNT(DISTINCT match_id)::int AS appearances
+      FROM player_matches
+      GROUP BY player_id, season_id, league_id
+    ),
+    ranked_teams AS (
+      SELECT
+        player_id,
+        season_id,
+        league_id,
+        team_id,
+        ROW_NUMBER() OVER (
+          PARTITION BY player_id, season_id, league_id
+          ORDER BY match_count DESC, latest_match DESC NULLS LAST, team_id
+        ) AS team_rank
+      FROM (
+        SELECT
+          player_id,
+          season_id,
+          league_id,
+          team_id,
+          COUNT(DISTINCT match_id) AS match_count,
+          MAX(kickoff_at) AS latest_match
+        FROM player_matches
+        WHERE team_id IS NOT NULL
+        GROUP BY player_id, season_id, league_id, team_id
+      ) team_counts
+    ),
+    event_stat_rows AS (
+      SELECT
+        me.player_id,
+        l.sportmonks_season_id AS season_id,
+        m.league_id,
+        COUNT(*) FILTER (WHERE me.event_type IN ('goal', 'penalty', '14', '16'))::int AS goals,
+        0::int AS assists,
+        COUNT(*) FILTER (WHERE me.event_type IN ('yellow_card', 'yellow_red_card', '19', '21'))::int AS yellow_cards,
+        COUNT(*) FILTER (WHERE me.event_type IN ('red_card', 'yellow_red_card', '20', '21'))::int AS red_cards
+      FROM match_events me
+      JOIN matches m ON m.id = me.match_id
+      JOIN leagues l ON l.id = m.league_id
+      WHERE me.player_id IS NOT NULL
+        AND m.sportmonks_id IS NOT NULL
+        AND LOWER(m.status) IN ('live', 'finished')
+        AND l.sportmonks_season_id IS NOT NULL
+      GROUP BY me.player_id, l.sportmonks_season_id, m.league_id
+
+      UNION ALL
+
+      SELECT
+        me.secondary_player_id AS player_id,
+        l.sportmonks_season_id AS season_id,
+        m.league_id,
+        0::int AS goals,
+        COUNT(*)::int AS assists,
+        0::int AS yellow_cards,
+        0::int AS red_cards
+      FROM match_events me
+      JOIN matches m ON m.id = me.match_id
+      JOIN leagues l ON l.id = m.league_id
+      WHERE me.secondary_player_id IS NOT NULL
+        AND me.event_type IN ('goal', 'penalty', '14', '16')
+        AND m.sportmonks_id IS NOT NULL
+        AND LOWER(m.status) IN ('live', 'finished')
+        AND l.sportmonks_season_id IS NOT NULL
+      GROUP BY me.secondary_player_id, l.sportmonks_season_id, m.league_id
+    ),
+    event_stats AS (
+      SELECT
+        player_id,
+        season_id,
+        league_id,
+        SUM(goals)::int AS goals,
+        SUM(assists)::int AS assists,
+        SUM(yellow_cards)::int AS yellow_cards,
+        SUM(red_cards)::int AS red_cards
+      FROM event_stat_rows
+      GROUP BY player_id, season_id, league_id
+    ),
+    player_seasons AS (
+      SELECT player_id, season_id, league_id FROM appearance_stats
+      UNION
+      SELECT player_id, season_id, league_id FROM event_stats
+    )
+    INSERT INTO player_season_stats (
+      player_id, season_id, league_id, team_id,
+      goals, assists, yellow_cards, red_cards, appearances
+    )
+    SELECT
+      ps.player_id,
+      ps.season_id,
+      ps.league_id,
+      rt.team_id,
+      COALESCE(es.goals, 0),
+      COALESCE(es.assists, 0),
+      COALESCE(es.yellow_cards, 0),
+      COALESCE(es.red_cards, 0),
+      COALESCE(aps.appearances, 0)
+    FROM player_seasons ps
+    LEFT JOIN event_stats es
+      ON es.player_id = ps.player_id
+      AND es.season_id = ps.season_id
+      AND es.league_id = ps.league_id
+    LEFT JOIN appearance_stats aps
+      ON aps.player_id = ps.player_id
+      AND aps.season_id = ps.season_id
+      AND aps.league_id = ps.league_id
+    LEFT JOIN ranked_teams rt
+      ON rt.player_id = ps.player_id
+      AND rt.season_id = ps.season_id
+      AND rt.league_id = ps.league_id
+      AND rt.team_rank = 1
+    ON CONFLICT (player_id, season_id, league_id) DO UPDATE
+    SET team_id = COALESCE(EXCLUDED.team_id, player_season_stats.team_id),
+        goals = GREATEST(player_season_stats.goals, EXCLUDED.goals),
+        assists = GREATEST(player_season_stats.assists, EXCLUDED.assists),
+        yellow_cards = GREATEST(player_season_stats.yellow_cards, EXCLUDED.yellow_cards),
+        red_cards = GREATEST(player_season_stats.red_cards, EXCLUDED.red_cards),
+        appearances = GREATEST(player_season_stats.appearances, EXCLUDED.appearances)
+  `)
+
+  return rowCount
 }
 
 async function getTrackedLeagues() {
@@ -1175,30 +1394,70 @@ export async function syncAllFootballData() {
 
     for (const league of discovered) {
       const seasonId = Number(currentSeason(league).id)
-      const localLeagueId = await upsertLeague(league)
-      trackedLeagues.set(Number(league.id), {
-        id: localLeagueId,
-        seasonId,
-        name: league.name,
-      })
+      let localLeagueId
+      try {
+        localLeagueId = await upsertLeague(league)
+        trackedLeagues.set(Number(league.id), {
+          id: localLeagueId,
+          seasonId,
+          name: league.name,
+        })
+      } catch (error) {
+        console.error(`Could not register league ${league.name}; skipping its sync:`, error)
+        continue
+      }
 
-      standingsCount += await syncStandings(
-        { name: league.name, seasonId },
-        localLeagueId,
-      )
-      playerStatsCount += await syncTopScorers(seasonId, localLeagueId)
+      try {
+        standingsCount += await syncStandings(
+          { name: league.name, seasonId },
+          localLeagueId,
+        )
+      } catch (error) {
+        console.error(`Could not sync standings for ${league.name}:`, error)
+      }
+
+      try {
+        playerStatsCount += await syncTopScorers(seasonId, localLeagueId)
+      } catch (error) {
+        console.error(`Could not sync top scorers for ${league.name}:`, error)
+      }
     }
 
     const leagueIds = [...trackedLeagues.keys()]
-    let fixtureCount = 0
 
-    for (let offset = -pastFixtureDays; offset < upcomingFixtureDays; offset += 1) {
-      const fixtures = await getFixturesForDate(dateForOffset(offset), leagueIds)
-      fixtureCount += await persistFixtures(fixtures, trackedLeagues)
+    const fixturesById = new Map()
+    if (leagueIds.length === 0) {
+      console.warn('Skipping fixture backfill because no leagues were registered')
+    } else {
+      for (let offset = -fixtureBackfillDays; offset <= fixtureBackfillDays; offset += 1) {
+        const date = dateForOffset(offset)
+        try {
+          const fixtures = await getFixturesForDate(date, leagueIds)
+          for (const fixture of fixtures) {
+            fixturesById.set(Number(fixture.id), fixture)
+          }
+        } catch (error) {
+          console.error(`Could not fetch fixtures for ${date}:`, error)
+        }
+      }
+
+      try {
+        const liveFixtures = await getLiveFixtures(leagueIds)
+        for (const fixture of liveFixtures) {
+          fixturesById.set(Number(fixture.id), fixture)
+        }
+      } catch (error) {
+        console.error('Could not fetch in-play fixtures during full sync:', error)
+      }
     }
 
-    const liveFixtures = await getLiveFixtures(leagueIds)
-    fixtureCount += await persistFixtures(liveFixtures, trackedLeagues)
+    const enrichmentCounts = await persistFixtures([...fixturesById.values()], trackedLeagues)
+    let recalculatedPlayerStats = 0
+    try {
+      recalculatedPlayerStats = await recalculatePlayerSeasonStats()
+    } catch (error) {
+      console.error('Could not recalculate player season stats after full sync:', error)
+    }
 
     const { rows } = await pool.query(
       `
@@ -1211,12 +1470,22 @@ export async function syncAllFootballData() {
     )
     teamCount = rows[0].count
 
+    console.log(
+      `Football sync upserted ${enrichmentCounts.fixtures} enriched matches, `
+      + `${enrichmentCounts.events} match events, ${enrichmentCounts.lineups} lineups, `
+      + `${playerStatsCount} top scorers, and ${recalculatedPlayerStats} recalculated player stats`,
+    )
+
     return {
       leagues: discovered.length,
       teams: teamCount,
       standings: standingsCount,
       playerStats: playerStatsCount,
-      fixtures: fixtureCount,
+      topScorers: playerStatsCount,
+      recalculatedPlayerStats,
+      fixtures: enrichmentCounts.fixtures,
+      events: enrichmentCounts.events,
+      lineups: enrichmentCounts.lineups,
     }
   })
 }
@@ -1225,11 +1494,16 @@ export async function syncLiveFixtures() {
   return withSyncLock(async () => {
     const trackedLeagues = await getTrackedLeagues()
     if (trackedLeagues.size === 0) {
-      return { fixtures: 0 }
+      return { fixtures: 0, events: 0, lineups: 0 }
     }
 
     const leagueIds = [...trackedLeagues.keys()]
-    const fixtures = await getLiveFixtures(leagueIds)
+    let fixtures = []
+    try {
+      fixtures = await getLiveFixtures(leagueIds)
+    } catch (error) {
+      console.error('Could not fetch in-play fixtures:', error)
+    }
 
     // In-play fixtures only cover matches currently being played, so a match
     // that finished since the last full sync would keep its last live state
@@ -1246,7 +1520,18 @@ export async function syncLiveFixtures() {
       byId.set(Number(fixture.id), fixture)
     }
 
-    const fixtureCount = await persistFixtures([...byId.values()], trackedLeagues)
-    return { fixtures: fixtureCount }
+    const counts = await persistFixtures([...byId.values()], trackedLeagues)
+    let recalculatedPlayerStats = 0
+    try {
+      recalculatedPlayerStats = await recalculatePlayerSeasonStats()
+    } catch (error) {
+      console.error('Could not recalculate player season stats after live sync:', error)
+    }
+    console.log(
+      `Live fixture sync upserted ${counts.fixtures} enriched matches, `
+      + `${counts.events} match events, ${counts.lineups} lineups, `
+      + `and ${recalculatedPlayerStats} recalculated player stats`,
+    )
+    return { ...counts, recalculatedPlayerStats }
   })
 }
