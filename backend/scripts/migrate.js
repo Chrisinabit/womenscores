@@ -9,6 +9,7 @@ try {
     '../migrations/002_sync_id_sequences.sql',
     '../migrations/003_add_sportmonks_ids.sql',
     '../migrations/004_add_match_details_and_player_stats.sql',
+    '../migrations/005_relax_legacy_match_event_type.sql',
   ]
 
   for (const migrationFile of migrationFiles) {
