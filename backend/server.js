@@ -2,12 +2,11 @@ import 'dotenv/config'
 import { timingSafeEqual } from 'node:crypto'
 import express from 'express'
 import cors from 'cors'
-import cron from 'node-cron'
 import pool from './db.js'
 import {
   isSyncInProgress,
+  startAdaptiveLiveSyncLoop,
   syncAllFootballData,
-  syncLiveFixtures,
 } from './services/footballSync.js'
 
 const app = express()
@@ -550,24 +549,11 @@ app.listen(port, () => {
       .catch((error) => {
         console.error('Startup football sync failed:', error)
       })
+      .finally(() => {
+        startAdaptiveLiveSyncLoop()
+      })
 
-    cron.schedule('*/5 * * * *', async () => {
-      if (isSyncInProgress()) {
-        console.log('Skipping live fixture sync because another sync is in progress')
-        return
-      }
-
-      try {
-        const result = await syncLiveFixtures()
-        console.log(
-          `Updated ${result.fixtures} enriched matches, ${result.events} events, `
-          + `and ${result.lineups} lineups`,
-        )
-      } catch (error) {
-        console.error('Scheduled football sync failed:', error)
-      }
-    })
-    console.log('Live fixture sync scheduled every 5 minutes')
+    console.log('Adaptive live fixture sync will start after startup sync completes')
   } else {
     console.warn('Startup and scheduled football sync are disabled because SPORTMONKS_API_TOKEN is not configured')
   }

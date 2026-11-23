@@ -350,22 +350,49 @@ export default function MatchCentreDrawer({ match, onClose }: { match: Match | n
       return
     }
 
+    const matchId = match.matchId
+    const matchInitiallyLive = match.isLive
     const controller = new AbortController()
+    let active = true
+    let refreshing = false
+    let intervalId: number | null = null
     setDetail(null)
     setLoading(true)
     setLoadError(null)
 
-    getMatchDetail(match.matchId, controller.signal)
-      .then(setDetail)
-      .catch((error: unknown) => {
+    async function refreshDetail() {
+      if (refreshing) return
+      refreshing = true
+      try {
+        const nextDetail = await getMatchDetail(matchId, controller.signal)
+        if (!active) return
+        setDetail(nextDetail)
+        setLoadError(null)
+        if (nextDetail.status === 'live' && intervalId === null) {
+          intervalId = window.setInterval(() => void refreshDetail(), 15_000)
+        } else if (nextDetail.status !== 'live' && intervalId !== null) {
+          window.clearInterval(intervalId)
+          intervalId = null
+        }
+      } catch (error: unknown) {
         if (error instanceof DOMException && error.name === 'AbortError') return
         setLoadError(error instanceof Error ? error.message : 'Unable to load match details')
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false)
-      })
+      } finally {
+        refreshing = false
+        if (active) setLoading(false)
+      }
+    }
 
-    return () => controller.abort()
+    if (matchInitiallyLive) {
+      intervalId = window.setInterval(() => void refreshDetail(), 15_000)
+    }
+    void refreshDetail()
+
+    return () => {
+      active = false
+      if (intervalId !== null) window.clearInterval(intervalId)
+      controller.abort()
+    }
   }, [match?.matchId])
 
   useEffect(() => {
@@ -485,6 +512,11 @@ export default function MatchCentreDrawer({ match, onClose }: { match: Match | n
         </nav>
 
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 sm:px-7 sm:py-5">
+          {loadError && (
+            <p role="alert" className="mb-4 border border-rose-400/30 bg-rose-400/5 px-3 py-2 text-[10px] text-rose-200">
+              Match details may be out of date: {loadError}
+            </p>
+          )}
           {activeTab === 'summary' && (
             <div id="match-panel-summary" role="tabpanel" aria-labelledby="match-tab-summary" className="space-y-6">
               <section aria-labelledby="timeline-heading">

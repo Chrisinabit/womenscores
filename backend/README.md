@@ -10,7 +10,7 @@ Apply the database migrations before starting the server:
 npm run db:migrate
 ```
 
-The migrations add Sportmonks-specific ID columns and a current season ID while preserving existing local IDs and API-Football/sample rows. Those legacy rows remain in the database but are excluded from API responses. Migration 004 adds match detail JSONB fields, Sportmonks-ID-keyed players/events/lineups, season player statistics, and poll vote counts. The migrations also create the indexes needed for upserts and synchronize local ID sequences. If `standings` already has duplicate `(league_id, team_id)` pairs, reconcile them before applying migration 001.
+The migrations add Sportmonks-specific ID columns and a current season ID while preserving existing local IDs and API-Football/sample rows. Those legacy rows remain in the database but are excluded from API responses. Migration 004 adds match detail JSONB fields, Sportmonks-ID-keyed players/events/lineups, season player statistics, and poll vote counts. Migration 006 adds the lineup player-name column required by both current and legacy database schemas. The migrations also create the indexes needed for upserts and synchronize local ID sequences. If `standings` already has duplicate `(league_id, team_id)` pairs, reconcile them before applying migration 001.
 
 Start the API and five-minute live-fixture job with:
 
@@ -24,7 +24,7 @@ npm run dev
 - On startup and for either manual sync endpoint, the service imports standings, top scorers/assists, and fixtures from 14 days ago through 14 days ahead. The fixtures-by-date endpoint returns a single date, so the service requests each date with a filter for the selected league IDs.
 - Fixture sync requests `participants;scores;venue;referees;events;lineups;statistics.type;tvstations.tvstation`. If the combined optional includes are rejected, the service retries each optional include independently so one restricted include does not prevent event or lineup upserts. Sync logs report the upserted enriched-match, event, lineup, and top-scorer counts.
 - Sportmonks event type IDs are normalized to readable event names. After fixture enrichment, current-season player totals are recalculated from played-match events and lineups without reducing higher provider totals.
-- The cron job requests in-play livescores every five minutes. Repeated in-play API calls are cached in memory for 20 seconds to coalesce duplicate requests. A server restart clears that cache.
+- The adaptive live-sync loop requests in-play scores every 25 seconds while a match is live or scheduled to start within 10 minutes, and every five minutes otherwise. It fully enriches live fixtures every three minutes and immediately refreshes a fixture when it finishes.
 - API requests are serialized with a default one-second minimum interval. Set `SPORTMONKS_MIN_INTERVAL_MS` to match your subscription limits.
 - In development, the manual endpoint is available without a token. In production, set `SYNC_API_SECRET` and send `Authorization: Bearer <secret>`; if it is unset, the endpoint is disabled.
 

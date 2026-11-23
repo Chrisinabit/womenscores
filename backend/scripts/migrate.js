@@ -10,6 +10,7 @@ try {
     '../migrations/003_add_sportmonks_ids.sql',
     '../migrations/004_add_match_details_and_player_stats.sql',
     '../migrations/005_relax_legacy_match_event_type.sql',
+    '../migrations/006_add_lineup_player_name.sql',
   ]
 
   for (const migrationFile of migrationFiles) {

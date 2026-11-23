@@ -23,6 +23,11 @@ const topScorerOptionalIncludes = ['type']
 const liveCacheTtlMs = 20_000
 const requestIntervalMs = Number(process.env.SPORTMONKS_MIN_INTERVAL_MS || 1000)
 const fixtureBackfillDays = 14
+const livePollIntervalMs = 25_000
+const idlePollIntervalMs = 5 * 60_000
+const fullLiveEnrichmentIntervalMs = 3 * 60_000
+const scheduleRefreshIntervalMs = 5 * 60_000
+const upcomingMatchWindowMs = 10 * 60_000
 // Sportmonks uses numeric periods ("1st", "2nd") for in-play fixtures; the
 // short codes are kept as well in case the API ever switches between the two.
 const activeStates = new Set([
@@ -65,6 +70,12 @@ let syncInProgress = false
 let matchTimeType
 let liveCache = { expiresAt: 0, key: '', fixtures: [] }
 let liveCacheRequest = null
+let previousLiveFixtureIds = new Set()
+let scheduledFixtures = []
+let lastScheduleRefreshAt = 0
+let lastFullLiveEnrichmentAt = 0
+let adaptiveLiveSyncTimer = null
+let adaptiveLiveSyncStarted = false
 
 if (!Number.isInteger(requestIntervalMs) || requestIntervalMs < 0) {
   throw new Error('SPORTMONKS_MIN_INTERVAL_MS must be a non-negative integer')
@@ -628,6 +639,18 @@ function normalizedStatus(shortName) {
   return stateMap.get(state) || 'scheduled'
 }
 
+function fixtureStatus(fixture) {
+  return normalizedStatus(relationValue(fixture.state)?.short_name)
+}
+
+function fixtureKickoffTimestamp(fixture) {
+  if (Number.isFinite(Number(fixture.starting_at_timestamp))) {
+    return Number(fixture.starting_at_timestamp) * 1000
+  }
+  const timestamp = Date.parse(fixture.starting_at || '')
+  return Number.isNaN(timestamp) ? null : timestamp
+}
+
 function getParticipants(fixture) {
   const participants = relationArray(fixture.participants)
   const participantLocation = (participant) => relationValue(participant.meta)?.location
@@ -955,7 +978,13 @@ async function persistFixtureLineups(fixture, matchId, participants, localTeamId
       continue
     }
 
-    const playerId = await upsertPlayer(lineup.player, lineup.player_id, lineup.player_name)
+    const lineupPlayerName = playerName(relationValue(lineup.player))
+      || stringValue(lineup.player_name)
+    const playerId = await upsertPlayer(
+      lineup.player,
+      lineup.player_id,
+      lineupPlayerName,
+    )
     if (!playerId) continue
 
     const participant = relationValue(lineup.participant)
@@ -972,14 +1001,15 @@ async function persistFixtureLineups(fixture, matchId, participants, localTeamId
     await pool.query(
       `
         INSERT INTO match_lineups (
-          id, match_id, team_id, player_id, lineup_type,
+          id, match_id, team_id, player_id, player_name, lineup_type,
           jersey_number, position_name, rating
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ON CONFLICT (id) DO UPDATE
         SET match_id = EXCLUDED.match_id,
             team_id = EXCLUDED.team_id,
             player_id = EXCLUDED.player_id,
+            player_name = EXCLUDED.player_name,
             lineup_type = EXCLUDED.lineup_type,
             jersey_number = EXCLUDED.jersey_number,
             position_name = EXCLUDED.position_name,
@@ -990,6 +1020,7 @@ async function persistFixtureLineups(fixture, matchId, participants, localTeamId
         matchId,
         teamId,
         playerId,
+        lineupPlayerName,
         type,
         integerValue(lineup.jersey_number ?? lineup.number),
         lineupPosition(lineup),
@@ -1354,10 +1385,53 @@ async function getLiveFixtures(leagueIds) {
   return promise
 }
 
-async function getFixturesForDate(date, leagueIds) {
-  return getAllDataWithOptionalIncludes(`/fixtures/date/${date}`, {
+async function getLiveFixturesForPolling(leagueIds, fullEnrichment = false) {
+  const optionalIncludes = ['events', 'state', 'periods']
+  if (fullEnrichment) {
+    optionalIncludes.push(
+      'statistics.type',
+      'lineups',
+      'venue',
+      'referees',
+      'tvstations.tvstation',
+    )
+  }
+
+  return getAllDataWithOptionalIncludes(
+    '/livescores/inplay',
+    {
+      filters: `fixtureLeagues:${[...leagueIds].sort((a, b) => a - b).join(',')}`,
+      per_page: 50,
+    },
+    ['participants', 'scores'],
+    optionalIncludes,
+  )
+}
+
+async function getFixtureById(fixtureId) {
+  const fixtures = await getAllDataWithOptionalIncludes(
+    `/fixtures/${fixtureId}`,
+    { per_page: 1 },
+    fixtureRequiredIncludes,
+    fixtureOptionalIncludes,
+  )
+  return fixtures[0] || null
+}
+
+async function getFixturesForDate(date, leagueIds, enriched = true) {
+  const params = {
     filters: `fixtureLeagues:${leagueIds.join(',')}`,
     per_page: 50,
+  }
+  if (!enriched) {
+    return getAllData('/fixtures/date/' + date, {
+      ...params,
+      include: ['participants', 'scores', 'state', 'league'].join(';'),
+    })
+  }
+
+  return getAllDataWithOptionalIncludes(`/fixtures/date/${date}`, {
+    ...params,
   }, fixtureRequiredIncludes, fixtureOptionalIncludes)
 }
 
@@ -1446,6 +1520,11 @@ export async function syncAllFootballData() {
         for (const fixture of liveFixtures) {
           fixturesById.set(Number(fixture.id), fixture)
         }
+        previousLiveFixtureIds = new Set(
+          liveFixtures
+            .filter((fixture) => fixtureStatus(fixture) !== 'finished')
+            .map((fixture) => Number(fixture.id)),
+        )
       } catch (error) {
         console.error('Could not fetch in-play fixtures during full sync:', error)
       }
@@ -1494,44 +1573,155 @@ export async function syncLiveFixtures() {
   return withSyncLock(async () => {
     const trackedLeagues = await getTrackedLeagues()
     if (trackedLeagues.size === 0) {
-      return { fixtures: 0, events: 0, lineups: 0 }
+      return {
+        fixtures: 0,
+        events: 0,
+        lineups: 0,
+        nextPollInMs: idlePollIntervalMs,
+      }
     }
 
     const leagueIds = [...trackedLeagues.keys()]
-    let fixtures = []
-    try {
-      fixtures = await getLiveFixtures(leagueIds)
-    } catch (error) {
-      console.error('Could not fetch in-play fixtures:', error)
+    const now = Date.now()
+    let liveFixtures = await getLiveFixturesForPolling(leagueIds)
+    const inPlayById = new Map(liveFixtures.map((fixture) => [Number(fixture.id), fixture]))
+    const nextLiveFixtureIds = new Set(
+      liveFixtures
+        .filter((fixture) => fixtureStatus(fixture) !== 'finished')
+        .map((fixture) => Number(fixture.id)),
+    )
+    const finishedFixtures = []
+    const finishedInPlayFixtures = liveFixtures.filter(
+      (fixture) => fixtureStatus(fixture) === 'finished'
+        && previousLiveFixtureIds.has(Number(fixture.id)),
+    )
+
+    for (const fixture of finishedInPlayFixtures) {
+      try {
+        const enrichedFixture = await getFixtureById(Number(fixture.id))
+        finishedFixtures.push(
+          enrichedFixture && fixtureStatus(enrichedFixture) === 'finished'
+            ? enrichedFixture
+            : fixture,
+        )
+      } catch (error) {
+        finishedFixtures.push(fixture)
+        console.error(`Could not fully enrich finished Sportmonks fixture ${fixture.id}:`, error)
+      }
     }
 
-    // In-play fixtures only cover matches currently being played, so a match
-    // that finished since the last full sync would keep its last live state
-    // forever. Re-check today's fixtures every run so results settle.
-    let fixturesByDate = []
-    try {
-      fixturesByDate = await getFixturesForDate(dateForOffset(0), leagueIds)
-    } catch (error) {
-      console.error('Could not refresh today\'s fixtures:', error)
+    for (const fixtureId of previousLiveFixtureIds) {
+      if (inPlayById.has(fixtureId)) continue
+      try {
+        const fixture = await getFixtureById(fixtureId)
+        const status = fixture ? fixtureStatus(fixture) : null
+        if (fixture && status === 'finished') {
+          finishedFixtures.push(fixture)
+        } else if (status === 'live' || !fixture) {
+          nextLiveFixtureIds.add(fixtureId)
+        }
+      } catch (error) {
+        nextLiveFixtureIds.add(fixtureId)
+        console.error(`Could not check whether Sportmonks fixture ${fixtureId} finished:`, error)
+      }
+    }
+    previousLiveFixtureIds = nextLiveFixtureIds
+
+    const hasLiveMatches = liveFixtures.some((fixture) => fixtureStatus(fixture) !== 'finished')
+    let performedFullEnrichment = false
+    if (
+      hasLiveMatches
+      && now - lastFullLiveEnrichmentAt >= fullLiveEnrichmentIntervalMs
+    ) {
+      lastFullLiveEnrichmentAt = now
+      try {
+        const enrichedLiveFixtures = await getLiveFixturesForPolling(leagueIds, true)
+        if (enrichedLiveFixtures.length > 0) liveFixtures = enrichedLiveFixtures
+        performedFullEnrichment = true
+      } catch (error) {
+        console.error('Could not fully enrich in-play fixtures:', error)
+      }
     }
 
-    const byId = new Map(fixtures.map((fixture) => [Number(fixture.id), fixture]))
-    for (const fixture of fixturesByDate) {
-      byId.set(Number(fixture.id), fixture)
+    let refreshedSchedule = false
+    if (now - lastScheduleRefreshAt >= scheduleRefreshIntervalMs) {
+      lastScheduleRefreshAt = now
+      try {
+        scheduledFixtures = await getFixturesForDate(dateForOffset(0), leagueIds, false)
+        refreshedSchedule = true
+      } catch (error) {
+        console.error('Could not refresh today\'s fixtures:', error)
+      }
     }
 
-    const counts = await persistFixtures([...byId.values()], trackedLeagues)
+    const upcomingMatch = scheduledFixtures.some((fixture) => {
+      if (fixtureStatus(fixture) !== 'scheduled') return false
+      const kickoff = fixtureKickoffTimestamp(fixture)
+      return kickoff !== null
+        && kickoff >= now
+        && kickoff <= now + upcomingMatchWindowMs
+    })
+
+    const fixturesById = new Map()
+    if (refreshedSchedule) {
+      for (const fixture of scheduledFixtures) {
+        fixturesById.set(Number(fixture.id), fixture)
+      }
+    }
+    for (const fixture of liveFixtures) {
+      fixturesById.set(Number(fixture.id), fixture)
+    }
+    for (const fixture of finishedFixtures) {
+      fixturesById.set(Number(fixture.id), fixture)
+    }
+
+    const counts = await persistFixtures([...fixturesById.values()], trackedLeagues)
     let recalculatedPlayerStats = 0
-    try {
-      recalculatedPlayerStats = await recalculatePlayerSeasonStats()
-    } catch (error) {
-      console.error('Could not recalculate player season stats after live sync:', error)
+    if (performedFullEnrichment || finishedFixtures.length > 0) {
+      try {
+        recalculatedPlayerStats = await recalculatePlayerSeasonStats()
+      } catch (error) {
+        console.error('Could not recalculate player season stats after live sync:', error)
+      }
     }
     console.log(
       `Live fixture sync upserted ${counts.fixtures} enriched matches, `
       + `${counts.events} match events, ${counts.lineups} lineups, `
       + `and ${recalculatedPlayerStats} recalculated player stats`,
     )
-    return { ...counts, recalculatedPlayerStats }
+    return {
+      ...counts,
+      recalculatedPlayerStats,
+      nextPollInMs: hasLiveMatches || upcomingMatch
+        ? livePollIntervalMs
+        : idlePollIntervalMs,
+      liveMatches: liveFixtures.length,
+      upcomingMatch,
+    }
   })
+}
+
+export function startAdaptiveLiveSyncLoop() {
+  if (adaptiveLiveSyncStarted) return
+  adaptiveLiveSyncStarted = true
+
+  const schedule = (delay) => {
+    adaptiveLiveSyncTimer = setTimeout(async () => {
+      adaptiveLiveSyncTimer = null
+      try {
+        const result = await syncLiveFixtures()
+        console.log(
+          `Adaptive live sync scheduled in ${Math.round(result.nextPollInMs / 1000)} seconds `
+          + `(${result.liveMatches} live matches; upcoming soon: ${result.upcomingMatch})`,
+        )
+        schedule(result.nextPollInMs)
+      } catch (error) {
+        console.error('Adaptive live fixture sync failed:', error)
+        schedule(idlePollIntervalMs)
+      }
+    }, delay)
+    adaptiveLiveSyncTimer.unref?.()
+  }
+
+  schedule(0)
 }

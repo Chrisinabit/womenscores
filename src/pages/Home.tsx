@@ -121,6 +121,25 @@ export default function Home() {
   useEffect(() => {
     const controller = new AbortController()
     let active = true
+
+    getLeagues(controller.signal)
+      .then((apiLeagues) => {
+        if (active) setLeagues(apiLeagues)
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return
+        if (active) setLoadError(error instanceof Error ? error.message : 'Unable to load leagues')
+      })
+
+    return () => {
+      active = false
+      controller.abort()
+    }
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    let active = true
     let refreshing = false
 
     async function refreshData() {
@@ -128,13 +147,9 @@ export default function Home() {
       refreshing = true
 
       try {
-        const [apiMatches, apiLeagues] = await Promise.all([
-          getMatches(controller.signal),
-          getLeagues(controller.signal),
-        ])
+        const apiMatches = await getMatches(controller.signal)
         if (!active) return
         setMatches(apiMatches.map(toMatch))
-        setLeagues(apiLeagues)
         setLoadError(null)
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return
@@ -146,14 +161,16 @@ export default function Home() {
     }
 
     void refreshData()
-    const intervalId = window.setInterval(() => void refreshData(), 60_000)
+    const intervalId = activeTab === 'live'
+      ? window.setInterval(() => void refreshData(), 15_000)
+      : null
 
     return () => {
       active = false
-      window.clearInterval(intervalId)
+      if (intervalId !== null) window.clearInterval(intervalId)
       controller.abort()
     }
-  }, [])
+  }, [activeTab])
 
   const liveMatches = matches.filter((match) => match.isLive)
   const upcomingMatches = matches.filter(
