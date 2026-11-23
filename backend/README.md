@@ -10,7 +10,7 @@ Apply the database migrations before starting the server:
 npm run db:migrate
 ```
 
-The migrations add Sportmonks-specific ID columns and a current season ID while preserving existing local IDs and API-Football/sample rows. Those legacy rows remain in the database but are excluded from API responses. Migration 004 adds match detail JSONB fields, Sportmonks-ID-keyed players/events/lineups, season player statistics, and poll vote counts. Migration 006 adds the lineup player-name column required by both current and legacy database schemas. The migrations also create the indexes needed for upserts and synchronize local ID sequences. If `standings` already has duplicate `(league_id, team_id)` pairs, reconcile them before applying migration 001.
+The migrations add Sportmonks-specific ID columns and a current season ID while preserving existing local IDs and API-Football/sample rows. Those legacy rows remain in the database but are excluded from API responses. Migration 004 adds match detail JSONB fields, Sportmonks-ID-keyed players/events/lineups, season player statistics, and poll vote counts. Migration 006 adds a nullable lineup player-name column for compatibility with legacy databases; player names are read from the normalized `players` table. The migrations also create the indexes needed for upserts and synchronize local ID sequences. If `standings` already has duplicate `(league_id, team_id)` pairs, reconcile them before applying migration 001.
 
 Start the API and five-minute live-fixture job with:
 
