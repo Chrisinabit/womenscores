@@ -31,6 +31,16 @@ export type ApiMatch = {
     shortName: string | null
     crestUrl: string | null
   }
+  scorers?: {
+    home: ApiGoalScorer[]
+    away: ApiGoalScorer[]
+  }
+}
+
+export type ApiGoalScorer = {
+  name: string | null
+  minute: number | null
+  addedTime: number | null
 }
 
 export type ApiMatchEvent = {

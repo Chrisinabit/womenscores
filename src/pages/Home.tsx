@@ -60,6 +60,7 @@ function toMatch(match: ApiMatch): Match {
     date: kickoff.date,
     homeCrestUrl: match.homeTeam.crestUrl,
     awayCrestUrl: match.awayTeam.crestUrl,
+    scorers: match.scorers,
   }
 }
 

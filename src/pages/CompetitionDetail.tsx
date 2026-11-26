@@ -62,6 +62,7 @@ function toMatchCentreMatch(match: ApiMatch): Match {
     isPostponed,
     homeCrestUrl: match.homeTeam.crestUrl,
     awayCrestUrl: match.awayTeam.crestUrl,
+    scorers: match.scorers,
   }
 }
 
@@ -314,7 +315,19 @@ export default function CompetitionDetail() {
                     {scheduleTitle} · Live API data
                   </div>
                   <div className="flex flex-col gap-2">
-                    {filteredSchedule.map((match, index) => (
+                    {filteredSchedule.map((match, index) => {
+                      const scorerEntries = [
+                        ...(match.scorers?.home || []).map((scorer) => ({
+                          team: match.homeTeam.shortName || match.homeTeam.name,
+                          scorer,
+                        })),
+                        ...(match.scorers?.away || []).map((scorer) => ({
+                          team: match.awayTeam.shortName || match.awayTeam.name,
+                          scorer,
+                        })),
+                      ].filter(({ scorer }) => scorer.name)
+
+                      return (
                   <button
                     key={match.matchId}
                     type="button"
@@ -342,9 +355,17 @@ export default function CompetitionDetail() {
                         ? match.minute === null ? 'LIVE' : `LIVE · ${match.minute}'`
                         : match.status.toUpperCase()}
                     </span>
+                    {scorerEntries.length > 0 && (
+                      <span className="col-span-2 row-start-3 text-[9px] leading-4 text-gray-400 sm:col-start-2 sm:col-span-2 sm:row-start-2">
+                        Scorers: {scorerEntries.map(({ team, scorer }) => (
+                          `${team}: ${scorer.name}${scorer.minute !== null ? ` ${scorer.minute}${scorer.addedTime ? `+${scorer.addedTime}` : ''}′` : ''}`
+                        )).join(' · ')}
+                      </span>
+                    )}
                     <span className="sr-only">Fixture {index + 1}</span>
                   </button>
-                ))}
+                      )
+                    })}
                   </div>
                 </>
               ) : (

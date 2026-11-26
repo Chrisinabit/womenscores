@@ -30,6 +30,7 @@ npm run dev
 
 ## Match detail endpoints
 
+- `GET /api/matches` includes scorer names and minutes grouped by home and away team for match cards and result lists.
 - `GET /api/matches/:id` returns match metadata, events, home/away lineups, statistics, broadcast stations, and poll totals. The `:id` is the local match ID returned by `GET /api/matches`.
 - `GET /api/leagues/:id/leaders` returns the current season's top scorers and assist leaders.
 - `GET /api/search?q=<text>` searches synced club and player names.

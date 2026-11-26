@@ -67,6 +67,30 @@ function TeamBadge({ name, shortName, crestUrl }: { name: string; shortName: str
   )
 }
 
+function TeamScorers({ events, team }: { events: ApiMatchEvent[]; team: 'home' | 'away' }) {
+  const scorers = events.filter((event) => {
+    if (!event.player || !['goal', 'penalty', 'own_goal'].includes(event.type) || !event.team) return false
+    const creditedTeam = event.type === 'own_goal'
+      ? event.team === 'home' ? 'away' : 'home'
+      : event.team
+    return creditedTeam === team
+  })
+
+  if (scorers.length === 0) return null
+
+  return (
+    <span className="mt-1 flex w-full max-w-[38vw] flex-col text-[9px] leading-4 text-amber-100/70 sm:max-w-[170px]">
+      {scorers.map((event) => (
+        <span key={event.id} className="truncate">
+          {event.player}
+          {event.minute !== null ? ` ${event.minute}${event.added_time ? `+${event.added_time}` : ''}′` : ''}
+          {event.type === 'own_goal' ? ' (OG)' : ''}
+        </span>
+      ))}
+    </span>
+  )
+}
+
 function FanPoll({
   matchId,
   homeName,
@@ -442,6 +466,7 @@ export default function MatchCentreDrawer({ match, onClose }: { match: Match | n
               <div className="flex min-w-0 flex-col items-center gap-1.5 text-center">
                 <TeamBadge name={detail.teams.home.name} shortName={detail.teams.home.short_name} crestUrl={detail.teams.home.crest_url} />
                 <span className="max-w-full truncate text-xs font-semibold text-white sm:text-sm">{detail.teams.home.name}</span>
+                <TeamScorers events={detail.match_events} team="home" />
               </div>
               <div className="min-w-[72px] text-center sm:min-w-[88px]">
                 {isScored ? (
@@ -458,6 +483,7 @@ export default function MatchCentreDrawer({ match, onClose }: { match: Match | n
               <div className="flex min-w-0 flex-col items-center gap-1.5 text-center">
                 <TeamBadge name={detail.teams.away.name} shortName={detail.teams.away.short_name} crestUrl={detail.teams.away.crest_url} />
                 <span className="max-w-full truncate text-xs font-semibold text-white sm:text-sm">{detail.teams.away.name}</span>
+                <TeamScorers events={detail.match_events} team="away" />
               </div>
             </div>
 

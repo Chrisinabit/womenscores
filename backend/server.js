@@ -89,11 +89,51 @@ app.get('/api/matches', async (_request, response, next) => {
           'name', away_team.name,
           'shortName', away_team.short_name,
           'crestUrl', away_team.crest_url
-        ) AS "awayTeam"
+        ) AS "awayTeam",
+        json_build_object(
+          'home', goal_summary.home,
+          'away', goal_summary.away
+        ) AS scorers
       FROM matches m
       JOIN leagues l ON l.id = m.league_id
       JOIN teams home_team ON home_team.id = m.home_team_id
       JOIN teams away_team ON away_team.id = m.away_team_id
+      LEFT JOIN LATERAL (
+        SELECT
+          COALESCE(
+            json_agg(
+              json_build_object(
+                'name', COALESCE(player.common_name, player.name),
+                'minute', event.minute,
+                'addedTime', event.added_time
+              )
+              ORDER BY event.minute ASC NULLS LAST, event.added_time ASC NULLS LAST, event.id ASC
+            ) FILTER (
+              WHERE (event.team_id = m.home_team_id AND event.event_type NOT IN ('own_goal', '15'))
+                OR (event.team_id = m.away_team_id AND event.event_type IN ('own_goal', '15'))
+            ),
+            '[]'::json
+          ) AS home,
+          COALESCE(
+            json_agg(
+              json_build_object(
+                'name', COALESCE(player.common_name, player.name),
+                'minute', event.minute,
+                'addedTime', event.added_time
+              )
+              ORDER BY event.minute ASC NULLS LAST, event.added_time ASC NULLS LAST, event.id ASC
+            ) FILTER (
+              WHERE (event.team_id = m.away_team_id AND event.event_type NOT IN ('own_goal', '15'))
+                OR (event.team_id = m.home_team_id AND event.event_type IN ('own_goal', '15'))
+            ),
+            '[]'::json
+          ) AS away
+        FROM match_events event
+        LEFT JOIN players player ON player.id = event.player_id
+        WHERE event.match_id = m.id
+          AND event.player_id IS NOT NULL
+          AND event.event_type IN ('goal', 'penalty', 'own_goal', '14', '15', '16')
+      ) goal_summary ON TRUE
       WHERE m.sportmonks_id IS NOT NULL
         AND l.sportmonks_id IS NOT NULL
         AND home_team.sportmonks_id IS NOT NULL

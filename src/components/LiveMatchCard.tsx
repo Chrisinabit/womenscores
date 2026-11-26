@@ -1,4 +1,5 @@
 import { Clock3, Star, Trophy } from 'lucide-react'
+import type { ApiGoalScorer } from '../api'
 
 export type Match = {
   matchId: number
@@ -17,6 +18,25 @@ export type Match = {
   date?: string
   homeCrestUrl?: string | null
   awayCrestUrl?: string | null
+  scorers?: {
+    home: ApiGoalScorer[]
+    away: ApiGoalScorer[]
+  }
+}
+
+function ScorerList({ scorers }: { scorers: ApiGoalScorer[] }) {
+  const namedScorers = scorers.filter((scorer) => scorer.name)
+  if (namedScorers.length === 0) return null
+
+  return (
+    <span className="mt-1 flex flex-col text-[9px] font-normal leading-4 text-gray-400">
+      {namedScorers.map((scorer, index) => (
+        <span key={`${scorer.name}-${scorer.minute}-${index}`} className="truncate">
+          {scorer.name} {scorer.minute !== null ? `${scorer.minute}${scorer.addedTime ? `+${scorer.addedTime}` : ''}′` : ''}
+        </span>
+      ))}
+    </span>
+  )
 }
 
 function TeamCrest({ initials, crestUrl, away = false }: { initials: string; crestUrl?: string | null; away?: boolean }) {
@@ -68,7 +88,10 @@ export default function LiveMatchCard({
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 py-5 sm:gap-5">
         <div className="flex min-w-0 items-center gap-2.5 text-xs font-medium text-white sm:gap-3">
           <TeamCrest initials={match.homeInitials} crestUrl={match.homeCrestUrl} />
-          <span className="truncate">{match.home}</span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate">{match.home}</span>
+            <ScorerList scorers={match.scorers?.home || []} />
+          </span>
         </div>
         <div className="flex min-w-[72px] flex-col items-center gap-1">
           {match.homeScore !== undefined && match.awayScore !== undefined ? (
@@ -83,7 +106,10 @@ export default function LiveMatchCard({
           </span>
         </div>
         <div className="flex min-w-0 items-center justify-end gap-2.5 text-right text-xs font-medium text-white sm:gap-3">
-          <span className="truncate">{match.away}</span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate">{match.away}</span>
+            <ScorerList scorers={match.scorers?.away || []} />
+          </span>
           <TeamCrest initials={match.awayInitials} crestUrl={match.awayCrestUrl} away />
         </div>
       </div>
