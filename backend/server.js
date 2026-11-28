@@ -2,18 +2,21 @@ import 'dotenv/config'
 import { timingSafeEqual } from 'node:crypto'
 import express from 'express'
 import cors from 'cors'
+import newsRouter from './routes/news.js'
 import pool from './db.js'
 import {
   isSyncInProgress,
   startAdaptiveLiveSyncLoop,
   syncAllFootballData,
 } from './services/footballSync.js'
+import { syncNewsFeeds } from './services/newsSync.js'
 
 const app = express()
 const port = Number(process.env.PORT || 3000)
 
 app.use(cors())
 app.use(express.json())
+app.use('/api/news', newsRouter)
 
 function positiveId(value) {
   const id = Number(value)
@@ -72,6 +75,7 @@ app.get('/api/matches', async (_request, response, next) => {
         m.minute,
         m.home_score AS "homeScore",
         m.away_score AS "awayScore",
+        m.tv_stations AS "tvStations",
         json_build_object(
           'id', l.id,
           'name', l.name,
@@ -580,6 +584,17 @@ app.use((error, _request, response, _next) => {
 
 app.listen(port, () => {
   console.log(`womenscores API listening on port ${port}`)
+
+  syncNewsFeeds().catch((error) => {
+    console.error('Startup news feed sync failed:', error)
+  })
+
+  setInterval(() => {
+    syncNewsFeeds().catch((error) => {
+      console.error('Scheduled news feed sync failed:', error)
+    })
+  }, 45 * 60_000)
+  console.log('News feed sync scheduled every 45 minutes')
 
   if (process.env.SPORTMONKS_API_TOKEN) {
     syncAllFootballData()

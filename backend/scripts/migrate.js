@@ -12,6 +12,7 @@ try {
     '../migrations/005_relax_legacy_match_event_type.sql',
     '../migrations/006_add_lineup_player_name.sql',
     '../migrations/007_player_season_stats_unique_key.sql',
+    '../migrations/008_create_news_articles.sql',
   ]
 
   for (const migrationFile of migrationFiles) {

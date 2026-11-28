@@ -3,6 +3,7 @@ import { ArrowRight, ArrowUpRight, Trophy } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import LiveMatchCard, { type Match } from '../components/LiveMatchCard'
 import MatchCentreDrawer from '../components/MatchCentreDrawer'
+import useDocumentTitle from '../hooks/useDocumentTitle'
 import { getCompetitionForLeague, getLeagues, getMatches, type ApiMatch, type ApiLeague } from '../api'
 import { competitionDirectory } from '../data/competitions'
 
@@ -61,6 +62,7 @@ function toMatch(match: ApiMatch): Match {
     homeCrestUrl: match.homeTeam.crestUrl,
     awayCrestUrl: match.awayTeam.crestUrl,
     scorers: match.scorers,
+    tvStations: match.tvStations,
   }
 }
 
@@ -112,6 +114,8 @@ function Hero() {
 }
 
 export default function Home() {
+  useDocumentTitle('Live scores, fixtures & TV listings')
+
   const [activeTab, setActiveTab] = useState<'live' | 'upcoming'>('live')
   const [matches, setMatches] = useState<Match[]>([])
   const [leagues, setLeagues] = useState<ApiLeague[]>([])

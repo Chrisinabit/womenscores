@@ -28,6 +28,13 @@ npm run dev
 - API requests are serialized with a default one-second minimum interval. Set `SPORTMONKS_MIN_INTERVAL_MS` to match your subscription limits.
 - In development, the manual endpoint is available without a token. In production, set `SYNC_API_SECRET` and send `Authorization: Bearer <secret>`; if it is unset, the endpoint is disabled.
 
+## News feed endpoints
+
+- The backend caches women's football RSS articles from BBC Sport and The Guardian at startup and refreshes the cache every 45 minutes. It retains the 100 most recent articles.
+- `GET /api/news?limit=24&source=BBC%20Sport` returns cached articles. `limit` is optional and capped at 50; `source` can be `BBC Sport` or `The Guardian`.
+- `POST /api/news/sync` triggers a feed refresh on demand.
+- Article images come from the feed's own media tags: the widest accessible copy wins, so the 620px Guardian `media:content` beats its 140px thumbnail. BBC thumbnails are stored at a card-sized 800px path. Re-run a sync to rewrite `image_url` on articles cached before that behavior existed.
+
 ## Match detail endpoints
 
 - `GET /api/matches` includes scorer names and minutes grouped by home and away team for match cards and result lists.

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowLeftRight, BarChart3, CalendarDays, Clock3, Goal, MapPin, Radio, ShieldAlert, Tv, UserRound, X } from 'lucide-react'
 import type { Match } from './LiveMatchCard'
+import BroadcastLink from './BroadcastLink'
 import { getMatchDetail, voteForMatch, type ApiMatchDetail, type ApiMatchEvent, type ApiMatchLineup, type ApiMatchPlayer } from '../api'
 
 type DrawerTab = 'summary' | 'lineups' | 'stats'
@@ -503,18 +504,18 @@ export default function MatchCentreDrawer({ match, onClose }: { match: Match | n
             <div className="flex shrink-0 items-center gap-2 text-[9px] font-bold uppercase tracking-[.15em] text-emerald-100/45">
               <Tv size={13} className="text-amber-300" />Where to watch
             </div>
-            <div className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto">
+            <div className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto pb-0.5">
               {(detail.tv_stations || []).map((station) => (
-                <span key={`${station.name}-${station.country}`} className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-100/10 bg-emerald-950/45 px-2.5 py-1 text-[10px] text-emerald-50/80">
-                  {station.logo
-                    ? <img src={station.logo} alt="" className="size-4 object-contain" />
-                    : <span className="grid size-4 place-items-center rounded-full bg-amber-300/10 text-[8px] font-bold text-amber-200">{station.name.slice(0, 1)}</span>}
-                  <span>{station.name}</span>{station.country && <span className="text-emerald-100/35">{station.country}</span>}
-                </span>
+                <BroadcastLink key={`${station.name}-${station.country}`} station={station} />
               ))}
               {(detail.tv_stations || []).length === 0 && <span className="shrink-0 self-center text-[10px] text-emerald-50/40">Broadcast information unavailable.</span>}
             </div>
           </div>
+          {(detail.tv_stations || []).length > 0 && (
+            <p className="mt-1.5 text-[10px] leading-4 text-emerald-50/40">
+              Some streaming links may earn us a commission at no extra cost to you.
+            </p>
+          )}
         </section>
 
         <nav className="shrink-0 border-b border-emerald-100/10 px-5 sm:px-7" role="tablist" aria-label="Match centre sections">

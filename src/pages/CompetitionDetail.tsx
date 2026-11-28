@@ -7,6 +7,7 @@ import LeagueLeaders from '../components/LeagueLeaders'
 import MatchCentreDrawer from '../components/MatchCentreDrawer'
 import type { Match } from '../components/LiveMatchCard'
 import { competitionDirectory, type StandingRow } from '../data/competitions'
+import useDocumentTitle from '../hooks/useDocumentTitle'
 
 type DetailTab = 'standings' | 'fixtures' | 'results' | 'leaders'
 
@@ -86,6 +87,9 @@ export default function CompetitionDetail() {
   const selectedTeamSlug = searchParams.get('team')
   const competition = competitionDirectory.find((item) => item.slug === slug)
   const competitionSlug = competition?.slug
+
+  useDocumentTitle(competition?.name ?? 'Competitions')
+
   const [activeTab, setActiveTab] = useState<DetailTab>(() => selectedTeamFilter ? 'fixtures' : 'standings')
   const [matches, setMatches] = useState<ApiMatch[]>([])
   const [standings, setStandings] = useState<StandingRow[]>([])

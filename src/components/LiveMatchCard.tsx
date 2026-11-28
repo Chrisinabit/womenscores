@@ -1,5 +1,6 @@
-import { Clock3, Star, Trophy } from 'lucide-react'
-import type { ApiGoalScorer } from '../api'
+import { Clock3, Star, Trophy, Tv } from 'lucide-react'
+import type { ApiGoalScorer, ApiTvStation } from '../api'
+import BroadcastLink from './BroadcastLink'
 
 export type Match = {
   matchId: number
@@ -22,6 +23,7 @@ export type Match = {
     home: ApiGoalScorer[]
     away: ApiGoalScorer[]
   }
+  tvStations?: ApiTvStation[]
 }
 
 function ScorerList({ scorers }: { scorers: ApiGoalScorer[] }) {
@@ -54,6 +56,9 @@ export default function LiveMatchCard({
   match: Match
   onSelect: (match: Match) => void
 }) {
+  const stations = match.tvStations ?? []
+  const visibleStations = stations.slice(0, 3)
+
   return (
     <article className="group border border-emerald-400/15 border-l-2 border-l-amber-300/80 bg-[#08281f]/85 transition-colors hover:border-emerald-300/40 hover:bg-[#0a3024]">
       <button
@@ -114,6 +119,18 @@ export default function LiveMatchCard({
         </div>
       </div>
       </button>
+
+      {visibleStations.length > 0 && (
+        <div className="flex items-center gap-1.5 overflow-x-auto border-t border-white/5 px-4 py-2 sm:px-5">
+          <Tv size={12} className="shrink-0 text-amber-300/70" aria-hidden="true" />
+          {visibleStations.map((station) => (
+            <BroadcastLink key={`${station.name}-${station.country}`} station={station} compact />
+          ))}
+          {stations.length > visibleStations.length && (
+            <span className="shrink-0 text-[9px] text-gray-500">+{stations.length - visibleStations.length}</span>
+          )}
+        </div>
+      )}
 
       <div className="flex items-center justify-between border-t border-white/5 px-4 py-3 text-[10px] text-gray-500 sm:px-5">
         <span>{match.isLive ? 'Live match centre' : 'Fixture details'}</span>

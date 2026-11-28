@@ -3,8 +3,11 @@ import { ArrowUpRight, Trophy } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { getCompetitionForLeague, getLeagues, type ApiLeague } from '../api'
 import { competitionDirectory } from '../data/competitions'
+import useDocumentTitle from '../hooks/useDocumentTitle'
 
 export default function Competitions() {
+  useDocumentTitle('Competitions')
+
   const [leagues, setLeagues] = useState<ApiLeague[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)

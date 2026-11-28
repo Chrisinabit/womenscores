@@ -1,4 +1,5 @@
 import type { Competition, FormResult, StandingRow } from './data/competitions'
+import { brandName } from './data/site'
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000')
   .replace(/\/+$/, '')
@@ -8,6 +9,12 @@ export type ApiLeague = {
   name: string
   country: string
   logoUrl: string | null
+}
+
+export type ApiTvStation = {
+  name: string
+  country: string | null
+  logo: string | null
 }
 
 export type ApiMatch = {
@@ -35,6 +42,7 @@ export type ApiMatch = {
     home: ApiGoalScorer[]
     away: ApiGoalScorer[]
   }
+  tvStations?: ApiTvStation[]
 }
 
 export type ApiGoalScorer = {
@@ -82,7 +90,7 @@ export type ApiMatchDetail = {
     away: { id: number; name: string; short_name: string | null; crest_url: string | null }
   }
   score: { home: number | null; away: number | null }
-  tv_stations: { name: string; country: string | null; logo: string | null }[]
+  tv_stations: ApiTvStation[]
   statistics: Partial<Record<
     'possession' | 'total_shots' | 'shots_on_target' | 'corners',
     { home: number | null; away: number | null }
@@ -145,6 +153,18 @@ export type ApiSearchResults = {
   players: ApiSearchPlayer[]
 }
 
+export type ApiNewsArticle = {
+  id: number
+  guid: string
+  title: string
+  summary: string | null
+  article_url: string
+  image_url: string | null
+  source: string
+  published_at: string
+  created_at: string
+}
+
 type ApiStanding = {
   rank: number
   played: number
@@ -175,7 +195,7 @@ async function requestJson<T>(
       throw error
     }
 
-    throw new Error(`Could not connect to the womenscores API at ${apiBaseUrl}`)
+    throw new Error(`Could not connect to the ${brandName} API at ${apiBaseUrl}`)
   }
 
   if (!response.ok) {
@@ -222,6 +242,16 @@ export function getLeagueLeaders(leagueId: number, signal?: AbortSignal) {
 
 export function searchApi(query: string, signal?: AbortSignal) {
   return getJson<ApiSearchResults>(`/api/search?q=${encodeURIComponent(query)}`, signal)
+}
+
+export function getNews(
+  limit = 24,
+  source?: string,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (source) params.set('source', source)
+  return getJson<{ articles: ApiNewsArticle[] }>(`/api/news?${params}`, signal)
 }
 
 export async function getStandings(leagueId: number, signal?: AbortSignal): Promise<StandingRow[]> {
